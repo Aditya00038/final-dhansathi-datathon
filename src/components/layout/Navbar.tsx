@@ -14,6 +14,7 @@ import {
   Moon,
   PiggyBank,
   Wallet,
+  ClipboardPaste,
 } from "lucide-react";
 import { useWallet } from "@/contexts/WalletContext";
 import { useAuth } from "@/contexts/AuthContext";
@@ -38,6 +39,7 @@ const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/savings/new", label: "Savings", icon: PiggyBank },
   { href: "/goals/new", label: "On-Chain", icon: Target },
+  { href: "/sms-parser", label: "SMS Paste", icon: ClipboardPaste },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
 ];
 
@@ -45,6 +47,7 @@ const bottomNavItems = [
   { href: "/dashboard", label: "Home", icon: LayoutDashboard },
   { href: "/savings/new", label: "Savings", icon: PiggyBank },
   { href: "/goals/new", label: "On-Chain", icon: Target },
+  { href: "/sms-parser", label: "SMS", icon: ClipboardPaste },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
 ];
 
@@ -77,7 +80,8 @@ export default function Navbar() {
   const isActive = (href: string) =>
     pathname === href ||
     (href === "/goals/new" && pathname.startsWith("/goals")) ||
-    (href === "/savings/new" && pathname.startsWith("/savings"));
+    (href === "/savings/new" && pathname.startsWith("/savings")) ||
+    (href === "/sms-parser" && pathname.startsWith("/sms-parser"));
 
   return (
     <>
@@ -216,7 +220,7 @@ export default function Navbar() {
 
       {/* ───── Mobile Bottom Navigation ───── */}
       <nav className="fixed bottom-0 left-0 right-0 z-50 border-t border-border/60 bg-background/90 backdrop-blur-xl md:hidden safe-area-pb">
-        <div className="grid grid-cols-4 h-14">
+        <div className="grid grid-cols-5 h-14">
           {bottomNavItems.map((item) => {
             const active = isActive(item.href);
             return (
