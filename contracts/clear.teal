@@ -1,0 +1,4 @@
+#pragma version 8
+// Clear-state program: always approves to allow accounts
+// to cleanly close out their local state (no local state used here).
+int 1

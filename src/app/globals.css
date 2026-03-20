@@ -1,0 +1,208 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: 'Inter', Arial, Helvetica, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@layer base {
+  /* Light theme */
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 160 10% 10%;
+    --card: 0 0% 99%;
+    --card-foreground: 160 10% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 160 10% 10%;
+    --primary: 145 63% 35%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 160 8% 95%;
+    --secondary-foreground: 160 10% 10%;
+    --muted: 160 8% 95%;
+    --muted-foreground: 160 5% 50%;
+    --accent: 38 92% 50%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 160 8% 90%;
+    --input: 160 8% 92%;
+    --ring: 145 63% 35%;
+    --chart-1: 145 63% 42%;
+    --chart-2: 38 92% 50%;
+    --chart-3: 280 65% 60%;
+    --chart-4: 200 70% 50%;
+    --chart-5: 340 75% 55%;
+    --radius: 0.75rem;
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 160 10% 10%;
+    --sidebar-primary: 145 63% 35%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 160 10% 94%;
+    --sidebar-accent-foreground: 160 10% 10%;
+    --sidebar-border: 160 10% 88%;
+    --sidebar-ring: 145 63% 35%;
+  }
+
+  /* Dark theme */
+  .dark {
+    --background: 160 12% 5%;
+    --foreground: 0 0% 96%;
+    --card: 160 10% 8%;
+    --card-foreground: 0 0% 96%;
+    --popover: 160 10% 8%;
+    --popover-foreground: 0 0% 96%;
+    --primary: 145 63% 42%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 160 8% 13%;
+    --secondary-foreground: 0 0% 96%;
+    --muted: 160 8% 13%;
+    --muted-foreground: 0 0% 60%;
+    --accent: 38 92% 50%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 160 8% 16%;
+    --input: 160 8% 13%;
+    --ring: 145 63% 42%;
+    --chart-1: 145 63% 42%;
+    --chart-2: 38 92% 50%;
+    --chart-3: 280 65% 60%;
+    --chart-4: 200 70% 50%;
+    --chart-5: 340 75% 55%;
+    --sidebar-background: 160 10% 6%;
+    --sidebar-foreground: 0 0% 95%;
+    --sidebar-primary: 145 63% 42%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 160 10% 14%;
+    --sidebar-accent-foreground: 0 0% 95%;
+    --sidebar-border: 160 10% 18%;
+    --sidebar-ring: 145 63% 42%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* ── Smooth transitions ── */
+@layer utilities {
+  .transition-default {
+    @apply transition-all duration-200 ease-in-out;
+  }
+}
+
+/* Safe area for mobile bottom nav */
+.safe-area-pb {
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+/* Google Translate Styling */
+.goog-te-banner-frame {
+  display: none !important;
+}
+body {
+  top: 0 !important;
+}
+.goog-te-gadget {
+  font-size: 0 !important;
+  font-family: inherit !important;
+  margin: 0 !important;
+  line-height: 1 !important;
+}
+.goog-te-gadget .goog-te-combo {
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  padding: 4px 8px !important;
+  padding-right: 24px !important;
+  border-radius: 6px !important;
+  border: none !important;
+  background: transparent !important;
+  color: hsl(var(--foreground)) !important;
+  cursor: pointer !important;
+  outline: none !important;
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  -moz-appearance: none !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 4px center !important;
+  background-size: 14px !important;
+}
+.goog-te-gadget .goog-te-combo:hover {
+  color: hsl(var(--primary)) !important;
+}
+.goog-te-gadget .goog-te-combo:focus {
+  color: hsl(var(--primary)) !important;
+}
+/* Language selector wrapper */
+.lang-selector-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--secondary));
+  transition: all 0.2s ease;
+  height: 36px;
+  overflow: hidden;
+}
+.lang-selector-wrapper:hover {
+  background: hsl(var(--muted));
+  border-color: hsl(var(--primary) / 0.3);
+}
+.lang-selector-icon {
+  width: 16px;
+  height: 16px;
+  color: hsl(var(--primary));
+  flex-shrink: 0;
+}
+/* Hide powered by text */
+.goog-te-gadget > span {
+  display: none !important;
+}
+.goog-logo-link {
+  display: none !important;
+}
+/* Hide notification popups */
+.goog-te-balloon-frame {
+  display: none !important;
+}
+#goog-gt-tt {
+  display: none !important;
+}
+.VIpgJd-ZVi9od-ORHb-OEVmcd {
+  display: none !important;
+}
+
+/* Floating language selector styling */
+.google-translate-floating .goog-te-gadget {
+  font-size: 0 !important;
+  margin: 0 !important;
+}
+.google-translate-floating .goog-te-combo {
+  font-size: 14px !important;
+  font-weight: 500 !important;
+  padding: 8px 12px !important;
+  padding-right: 28px !important;
+  border-radius: 8px !important;
+  border: 1px solid hsl(var(--border)) !important;
+  background: hsl(var(--background)) !important;
+  color: hsl(var(--foreground)) !important;
+  cursor: pointer !important;
+  outline: none !important;
+  width: 100% !important;
+  min-width: 150px !important;
+}
+.google-translate-floating .goog-te-combo:hover,
+.google-translate-floating .goog-te-combo:focus {
+  border-color: hsl(var(--primary)) !important;
+}

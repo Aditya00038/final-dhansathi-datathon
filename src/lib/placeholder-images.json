@@ -1,0 +1,10 @@
+{
+  "placeholderImages": [
+    {
+      "id": "hero-dashboard",
+      "description": "A vibrant piggy bank symbolizing savings and financial goals.",
+      "imageUrl": "https://images.unsplash.com/photo-1691302174401-5350410a3179?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3NDE5ODJ8MHwxfHNlYXJjaHwzfHxzYXZpbmdzJTIwcGlnZ3liYW5rfGVufDB8fHx8MTc3MTQ4NTA5Mnww&ixlib=rb-4.1.0&q=80&w=1080",
+      "imageHint": "savings piggybank"
+    }
+  ]
+}

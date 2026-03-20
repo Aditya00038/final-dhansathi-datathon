@@ -1,0 +1,194 @@
+#pragma version 8
+// ============================================================
+// AlgoSave — SavingsVault Approval Program
+// Compiled target: AVM 8 (Algorand TestNet)
+//
+// ARC-4 ABI method routing:
+//   create_goal(address,uint64,uint64)void  — app creation
+//   deposit(pay)void                        — fund the vault
+//   withdraw()void                          — claim funds
+//
+// Global state layout:
+//   goal_owner    (bytes)   — 32-byte Algorand address
+//   target_amount (uint64)  — savings target in microALGOs
+//   total_saved   (uint64)  — running total deposited
+//   deadline      (uint64)  — Unix timestamp for lock expiry
+//   goal_completed(uint64)  — 0 = active, 1 = goal met
+// ============================================================
+
+// --- Transaction type dispatch ---
+txn ApplicationID
+int 0
+==
+bnz create_branch
+
+// Existing app: route by ABI method selector (first app-arg)
+txna ApplicationArgs 0
+method "create_goal(address,uint64,uint64)void"
+==
+bnz handle_create_goal
+
+txna ApplicationArgs 0
+method "deposit(pay)void"
+==
+bnz handle_deposit
+
+txna ApplicationArgs 0
+method "withdraw()void"
+==
+bnz handle_withdraw
+
+// No matching method — reject
+err
+
+// --- On creation, enforce that create_goal is being called ---
+create_branch:
+txna ApplicationArgs 0
+method "create_goal(address,uint64,uint64)void"
+==
+assert
+b handle_create_goal
+
+// ============================================================
+// create_goal(owner: address, target: uint64, deadline: uint64)
+// Called once at application creation to initialise vault state.
+// ============================================================
+handle_create_goal:
+// Store goal_owner — ABI address is 32 raw bytes in arg[1]
+byte "goal_owner"
+txna ApplicationArgs 1
+app_global_put
+
+// Store target_amount — ABI uint64 big-endian 8 bytes, btoi converts
+byte "target_amount"
+txna ApplicationArgs 2
+btoi
+app_global_put
+
+// Store deadline timestamp
+byte "deadline"
+txna ApplicationArgs 3
+btoi
+app_global_put
+
+// Initialise accumulators
+byte "total_saved"
+int 0
+app_global_put
+
+byte "goal_completed"
+int 0
+app_global_put
+
+int 1
+return
+
+// ============================================================
+// deposit(payment: pay)void
+// Must be called as txn[N] where txn[N-1] is the payment.
+// Adds the payment amount to total_saved and checks completion.
+// ============================================================
+handle_deposit:
+// 1. Only the vault owner may deposit
+txn Sender
+byte "goal_owner"
+app_global_get
+==
+assert
+
+// 2. Deadline must not have passed
+global LatestTimestamp
+byte "deadline"
+app_global_get
+<
+assert
+
+// 3. Goal must still be active
+byte "goal_completed"
+app_global_get
+int 0
+==
+assert
+
+// 4. The payment transaction (group index N-1) must pay this contract
+txn GroupIndex
+int 1
+-
+gtxns Receiver
+global CurrentApplicationAddress
+==
+assert
+
+// 5. Add payment amount to total_saved
+byte "total_saved"
+byte "total_saved"
+app_global_get
+txn GroupIndex
+int 1
+-
+gtxns Amount
++
+app_global_put
+
+// 6. Check if target is now reached
+byte "total_saved"
+app_global_get
+byte "target_amount"
+app_global_get
+>=
+bz deposit_done
+
+// Mark goal as completed
+byte "goal_completed"
+int 1
+app_global_put
+
+deposit_done:
+int 1
+return
+
+// ============================================================
+// withdraw()void
+// Sends the entire vault balance back to the owner via an
+// inner transaction. Only permitted when:
+//   A) goal_completed == 1  (target reached), OR
+//   B) LatestTimestamp >= deadline  (lock period over)
+// ============================================================
+handle_withdraw:
+// 1. Only the owner may withdraw
+txn Sender
+byte "goal_owner"
+app_global_get
+==
+assert
+
+// 2. Enforce discipline: must meet condition A or B
+byte "goal_completed"
+app_global_get
+int 1
+==
+global LatestTimestamp
+byte "deadline"
+app_global_get
+>=
+||
+assert
+
+// 3. Inner payment: close the vault account to the owner
+itxn_begin
+int pay
+itxn_field TypeEnum
+byte "goal_owner"
+app_global_get
+itxn_field Receiver
+int 0
+itxn_field Amount
+int 0
+itxn_field Fee
+byte "goal_owner"
+app_global_get
+itxn_field CloseRemainderTo
+itxn_submit
+
+int 1
+return

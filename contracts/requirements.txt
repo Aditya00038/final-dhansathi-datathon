@@ -1,0 +1,9 @@
+# Algorand smart contract development dependencies
+# beaker-pyteal 1.x wraps pyteal with a cleaner Application API
+beaker-pyteal>=1.0.0,<2.0.0
+
+# The official Algorand Python SDK (used for compiling and reading state)
+py-algorand-sdk>=2.4.0
+
+# Required on Python 3.12+ because distutils was removed from stdlib
+setuptools>=68.0.0
