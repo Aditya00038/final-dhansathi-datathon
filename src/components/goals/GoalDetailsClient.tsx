@@ -6,7 +6,7 @@ import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { formatCurrency, formatDateFromTimestamp, microAlgosToAlgos, toDate } from '@/lib/utils';
-import { Calendar, Target, PiggyBank, Award, CheckCircle2, History, Bot, Milestone, Wallet, AlertTriangle, ExternalLink, HeartPulse, Lock, ShieldAlert, Sparkles } from 'lucide-react';
+import { Calendar, Target, PiggyBank, Award, CheckCircle2, History, Milestone, Wallet, AlertTriangle, ExternalLink, HeartPulse, Lock, ShieldAlert, Sparkles } from 'lucide-react';
 import { DepositDialog } from './DepositDialog';
 import { SavingsChart } from './SavingsChart';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -18,7 +18,6 @@ import {
 import Link from 'next/link';
 import { cn } from '@/lib/utils';
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { getAchievementCoachAdvice } from '@/ai/flows/ai-achievement-coach-flow';
 import { getGoalOnChainState, withdrawFromGoal, mintAchievementNFT } from '@/lib/blockchain';
 import { useWallet } from '@/contexts/WalletContext';
 import { useToast } from '@/hooks/use-toast';
@@ -35,17 +34,10 @@ type GoalDetailsClientProps = {
   goal: Goal;
 };
 
-type AchievementInfo = {
-  message: string;
-  tip: string;
-} | null;
-
 export default function GoalDetailsClient({ goal: initialGoal }: GoalDetailsClientProps) {
   const [goal, setGoal] = useState(initialGoal);
   const [onChainGoal, setOnChainGoal] = useState<OnChainGoal | null>(null);
   const [isFetchingOnChain, setIsFetchingOnChain] = useState(true);
-  const [achievementInfo, setAchievementInfo] = useState<AchievementInfo | null>(null);
-  const [isLoadingAdvice, setIsLoadingAdvice] = useState(false);
   const [isWithdrawing, setIsWithdrawing] = useState(false);
   const [latestTxId, setLatestTxId] = useState<string | null>(null);
   const [showWithdrawConfirm, setShowWithdrawConfirm] = useState(false);
@@ -113,37 +105,6 @@ export default function GoalDetailsClient({ goal: initialGoal }: GoalDetailsClie
       if (!fullGoalData) return { score: 0, feedback: [] };
       return calculateFinancialHealth(fullGoalData);
   }, [fullGoalData]);
-
-  const handleFetchAdvice = async () => {
-    if (!onChainGoal) return;
-    setIsLoadingAdvice(true);
-    setAchievementInfo(null);
-
-    const progress = (microAlgosToAlgos(onChainGoal.totalSaved) / microAlgosToAlgos(onChainGoal.targetAmount)) * 100;
-    const achievementData = calculateAchievements(goal.deposits || [], onChainGoal);
-    const unlockedList = achievementData.achievements.filter(a => a.unlocked);
-    
-    if (unlockedList.length === 0) {
-      setIsLoadingAdvice(false);
-      return;
-    }
-
-    try {
-      const lastAchievement = unlockedList[unlockedList.length - 1];
-      const advice = await getAchievementCoachAdvice({
-        achievementName: lastAchievement.name,
-        goalName: goal.name,
-        currentSaved: microAlgosToAlgos(onChainGoal.totalSaved),
-        targetAmount: microAlgosToAlgos(onChainGoal.targetAmount),
-        progressPercentage: progress
-      });
-      setAchievementInfo({ message: advice.congratulatoryMessage, tip: advice.microTip });
-    } catch (error) {
-      console.error("Failed to get achievement advice:", error);
-    } finally {
-      setIsLoadingAdvice(false);
-    }
-  };
 
   const handleWithdraw = async () => {
     if (!activeAddress || !onChainGoal) {
@@ -630,29 +591,6 @@ export default function GoalDetailsClient({ goal: initialGoal }: GoalDetailsClie
               </CardContent>
             </Card>
           )}
-
-           {unlockedAchievements.length > 0 && (
-             <Card>
-                <CardHeader>
-                    <CardTitle className="flex items-center"><Bot className="mr-2" /> AI Coach</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                    {achievementInfo && !isLoadingAdvice ? (
-                        <div className="space-y-3 text-sm">
-                            <p className="italic">"{achievementInfo.message}"</p>
-                            <p><strong className="text-primary">Micro-tip:</strong> {achievementInfo.tip}</p>
-                        </div>
-                    ) : (
-                        <p className="text-sm text-muted-foreground">
-                            Get personalized advice from our AI coach based on your latest achievement!
-                        </p>
-                    )}
-                    <Button onClick={handleFetchAdvice} disabled={isLoadingAdvice} className="w-full">
-                        {isLoadingAdvice ? <><Loader2 className="mr-2 h-4 w-4 animate-spin"/>Getting advice...</> : "Get AI Coach Tip"}
-                    </Button>
-                </CardContent>
-            </Card>
-           )}
 
           <GoalAdviceAgent
             goalName={goal.name}

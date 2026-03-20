@@ -10,6 +10,9 @@ import { useToast } from '@/hooks/use-toast';
 import type { AIParsedTransaction } from '@/lib/types'; // Using the official type
 import { parseSmsAction } from './actions';
 import { useBankBalance } from '@/hooks/useBankBalance';
+import { useAuth } from '@/contexts/AuthContext';
+import { saveSmsParsedTransactions } from '@/lib/local-store';
+import Link from 'next/link';
 
 function ErrorDisplay({ message }: { message: string }) {
   return (
@@ -24,8 +27,10 @@ export default function SmsParserPage() {
   const [smsInput, setSmsInput] = useState('');
   const [parsedTransactions, setParsedTransactions] = useState<AIParsedTransaction[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { bankAccount, updateBalance } = useBankBalance();
+  const { user } = useAuth();
   const { toast } = useToast();
 
   const handleParse = async () => {
@@ -53,6 +58,47 @@ export default function SmsParserPage() {
     }
 
     setIsLoading(false);
+  };
+
+  const handleSaveTransactions = async () => {
+    if (!user) {
+      toast({ title: 'Login Required', description: 'Please log in before saving transactions.', variant: 'destructive' });
+      return;
+    }
+
+    if (!bankAccount) {
+      toast({
+        title: 'Connect Bank First',
+        description: 'You must connect a bank account before saving parsed transactions.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (parsedTransactions.length === 0) {
+      toast({ title: 'No Transactions', description: 'Parse SMS messages first.', variant: 'destructive' });
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      const saved = saveSmsParsedTransactions(user.uid, parsedTransactions);
+      if (saved.length === 0) {
+        toast({ title: 'Nothing New to Save', description: 'All parsed transactions were already saved.' });
+        return;
+      }
+
+      const balanceImpact = saved.reduce((sum, tx) => sum + (tx.type === 'debit' ? -tx.amount : tx.amount), 0);
+      if (balanceImpact !== 0) {
+        await updateBalance(balanceImpact);
+      }
+
+      toast({ title: 'Transactions Saved', description: `${saved.length} transaction(s) saved successfully.` });
+    } catch (e: any) {
+      toast({ title: 'Save Failed', description: e?.message || 'Could not save transactions.', variant: 'destructive' });
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -123,7 +169,14 @@ export default function SmsParserPage() {
               </Table>
             </CardContent>
             <CardFooter>
-              <Button>Save Transactions</Button>
+              <div className='flex flex-col sm:flex-row gap-2 w-full sm:w-auto'>
+                <Button onClick={handleSaveTransactions} disabled={isSaving || !bankAccount}>
+                  {isSaving ? 'Saving...' : 'Save Transactions'}
+                </Button>
+                <Button variant='outline' asChild>
+                  <Link href='/analytics'>View Spending Insights in Analytics</Link>
+                </Button>
+              </div>
             </CardFooter>
           </Card>
         )}

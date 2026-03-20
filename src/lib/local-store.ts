@@ -1,11 +1,12 @@
 // Local storage-based store — replaces Firebase when it is unreachable.
 // Runs entirely in the browser; the data structure mirrors the Firestore schema.
 
-import type { Goal, Deposit, AchievementNFT, Transaction } from "./types";
+import type { Goal, Deposit, AchievementNFT, Transaction, AIParsedTransaction, SavedSmsTransaction } from "./types";
 
 const GOALS_KEY_PREFIX = "algosave_goals_";
 const NFTS_KEY_PREFIX  = "algosave_nfts_";
 const BALANCE_KEY_PREFIX = "algosave_balance_";
+const SMS_TRANSACTIONS_KEY_PREFIX = "algosave_sms_transactions_";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -19,6 +20,10 @@ function getNftsKey(userId: string) {
 
 function getBalanceKey(userId: string) {
     return `${BALANCE_KEY_PREFIX}${userId}`;
+}
+
+function getSmsTransactionsKey(userId: string) {
+  return `${SMS_TRANSACTIONS_KEY_PREFIX}${userId}`;
 }
 
 function readGoals(userId: string): Goal[] {
@@ -137,4 +142,54 @@ export function updateBalance(userId: string, transactions: Partial<Transaction>
     localStorage.setItem(getBalanceKey(userId), currentBalance.toString());
   }
   return currentBalance;
+}
+
+export function getSavedSmsTransactions(userId: string): SavedSmsTransaction[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(getSmsTransactionsKey(userId));
+    const items = raw ? (JSON.parse(raw) as SavedSmsTransaction[]) : [];
+    return Array.isArray(items) ? items : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveSmsParsedTransactions(userId: string, transactions: AIParsedTransaction[]): SavedSmsTransaction[] {
+  if (typeof window === "undefined") return [];
+
+  const existing = getSavedSmsTransactions(userId);
+  const existingKeys = new Set(
+    existing.map((tx) => `${tx.amount}|${tx.date}|${tx.merchant.toLowerCase()}|${tx.type}`)
+  );
+
+  const normalized: SavedSmsTransaction[] = transactions
+    .filter((t): t is Required<Pick<AIParsedTransaction, "amount" | "date" | "merchant" | "type">> => (
+      typeof t.amount === "number" && Number.isFinite(t.amount) &&
+      typeof t.date === "string" && t.date.trim().length > 0 &&
+      typeof t.merchant === "string" && t.merchant.trim().length > 0 &&
+      (t.type === "debit" || t.type === "credit")
+    ))
+    .map((t) => ({
+      id: `sms_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      userId,
+      amount: t.amount,
+      date: t.date,
+      merchant: t.merchant.trim(),
+      type: t.type,
+      source: "sms-paste" as const,
+      createdAt: new Date().toISOString(),
+    }))
+    .filter((tx) => {
+      const key = `${tx.amount}|${tx.date}|${tx.merchant.toLowerCase()}|${tx.type}`;
+      if (existingKeys.has(key)) return false;
+      existingKeys.add(key);
+      return true;
+    });
+
+  const merged = [...normalized, ...existing].sort((a, b) =>
+    new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
+  localStorage.setItem(getSmsTransactionsKey(userId), JSON.stringify(merged));
+  return normalized;
 }

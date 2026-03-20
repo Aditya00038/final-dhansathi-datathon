@@ -11,7 +11,11 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 
-export function ConnectBank() {
+type ConnectBankProps = {
+  mobile?: boolean;
+};
+
+export function ConnectBank({ mobile = false }: ConnectBankProps) {
   const { bankAccount, loading, disconnectBank } = useBankBalance();
   const { toast } = useToast();
 
@@ -33,7 +37,12 @@ export function ConnectBank() {
 
   if (loading) {
     return (
-      <Button variant="outline" size="sm" className="h-8 text-xs rounded-lg" disabled>
+      <Button
+        variant="outline"
+        size="sm"
+        className={mobile ? "w-full h-9 text-sm rounded-lg" : "h-8 text-xs rounded-lg"}
+        disabled
+      >
         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
         Loading...
       </Button>
@@ -44,14 +53,21 @@ export function ConnectBank() {
     return (
       <Popover>
         <PopoverTrigger asChild>
-          <Button variant="outline" className="h-auto pl-2 pr-3 py-1.5 flex items-center gap-2">
-            <Landmark className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-            <div className="flex flex-col items-start">
-              <span className="text-xs font-semibold leading-tight">{bankAccount.accountNickname}</span>
-              <span className="text-xs font-mono leading-tight text-muted-foreground">
-                ₹{bankAccount.balance.toLocaleString('en-IN')}
-              </span>
-            </div>
+          <Button
+            variant="outline"
+            className={mobile ? "w-full h-9 text-sm justify-start rounded-lg" : "h-auto pl-2 pr-3 py-1.5 flex items-center gap-2"}
+          >
+            <Landmark className="h-4 w-4 text-muted-foreground flex-shrink-0 mr-2" />
+            {mobile ? (
+              <span className="truncate">{bankAccount.accountNickname}</span>
+            ) : (
+              <div className="flex flex-col items-start">
+                <span className="text-xs font-semibold leading-tight">{bankAccount.accountNickname}</span>
+                <span className="text-xs font-mono leading-tight text-muted-foreground">
+                  ₹{bankAccount.balance.toLocaleString('en-IN')}
+                </span>
+              </div>
+            )}
           </Button>
         </PopoverTrigger>
         <PopoverContent className="w-64" align="end">
@@ -77,9 +93,14 @@ export function ConnectBank() {
   }
 
   return (
-    <Button asChild variant="outline" size="sm" className="h-8 text-xs rounded-lg">
+    <Button
+      asChild
+      variant="outline"
+      size="sm"
+      className={mobile ? "w-full h-9 text-sm rounded-lg" : "h-8 text-xs rounded-lg"}
+    >
       <Link href="/connect-bank">
-        <Wallet className="mr-1.5 h-3.5 w-3.5" />
+        <Wallet className="mr-2 h-4 w-4" />
         Connect Bank
       </Link>
     </Button>

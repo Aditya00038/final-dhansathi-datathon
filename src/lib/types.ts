@@ -16,3 +16,14 @@ export type Transaction = z.infer<typeof TransactionSchema>;
 export type AIParsedTransaction = Omit<Partial<Transaction>, "date"> & {
   date?: string;
 };
+
+export type SavedSmsTransaction = {
+  id: string;
+  userId: string;
+  amount: number;
+  date: string;
+  merchant: string;
+  type: "debit" | "credit";
+  source: "sms-paste";
+  createdAt: string;
+};
