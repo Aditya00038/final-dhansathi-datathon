@@ -13,7 +13,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage, FormDescription } from "../ui/form";
-import { createNormalGoal } from "@/lib/normal-goal-store";
+import { createNormalGoalFirestore } from "@/lib/normal-goal-store";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -56,7 +56,7 @@ export default function CreateNormalGoalForm() {
 
     setIsSubmitting(true);
     try {
-      const goal = createNormalGoal(user.uid, {
+      const goal = await createNormalGoalFirestore(user.uid, {
         name: data.name,
         targetAmount: data.targetAmount,
         deadline: data.deadline.toISOString(),

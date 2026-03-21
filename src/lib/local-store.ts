@@ -2,6 +2,16 @@
 // Runs entirely in the browser; the data structure mirrors the Firestore schema.
 
 import type { Goal, Deposit, AchievementNFT, Transaction, AIParsedTransaction, SavedSmsTransaction } from "./types";
+import { db } from "./firebase";
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  setDoc,
+  updateDoc,
+  arrayUnion,
+} from "firebase/firestore";
 
 const GOALS_KEY_PREFIX = "algosave_goals_";
 const NFTS_KEY_PREFIX  = "algosave_nfts_";
@@ -34,6 +44,14 @@ function readGoals(userId: string): Goal[] {
   } catch {
     return [];
   }
+}
+
+function goalsCollection(userId: string) {
+  return collection(db, "users", userId, "goals");
+}
+
+function goalDoc(userId: string, goalId: string) {
+  return doc(db, "users", userId, "goals", goalId);
 }
 
 function writeGoals(userId: string, goals: Goal[]): boolean {
@@ -75,8 +93,50 @@ export function getGoals(userId: string): Goal[] {
   return readGoals(userId);
 }
 
+export async function getGoalsFirestore(userId: string): Promise<Goal[]> {
+  try {
+    const snap = await getDocs(goalsCollection(userId));
+    const remoteGoals = snap.docs.map((d) => d.data() as Goal);
+    const localGoals = readGoals(userId);
+    const merged = new Map<string, Goal>(remoteGoals.map((g) => [g.id, g]));
+
+    for (const localGoal of localGoals) {
+      if (!merged.has(localGoal.id)) {
+        merged.set(localGoal.id, localGoal);
+        try {
+          await setDoc(goalDoc(userId, localGoal.id), localGoal);
+        } catch {
+          // Ignore backfill errors and keep local cache data.
+        }
+      }
+    }
+
+    const mergedGoals = Array.from(merged.values());
+    writeGoals(userId, mergedGoals);
+    return mergedGoals;
+  } catch {
+    return readGoals(userId);
+  }
+}
+
 export function getGoalById(userId: string, id: string): Goal | undefined {
   return readGoals(userId).find(g => g.id === id);
+}
+
+export async function getGoalByIdFirestore(userId: string, id: string): Promise<Goal | undefined> {
+  try {
+    const snap = await getDoc(goalDoc(userId, id));
+    if (snap.exists()) {
+      const goal = snap.data() as Goal;
+      const cached = readGoals(userId);
+      const rest = cached.filter((g) => g.id !== id);
+      writeGoals(userId, [goal, ...rest]);
+      return goal;
+    }
+    return getGoalById(userId, id);
+  } catch {
+    return getGoalById(userId, id);
+  }
 }
 
 export function addDepositToGoal(userId: string, goalId: string, deposit: Omit<Deposit, 'timestamp'>) {
@@ -91,6 +151,55 @@ export function addDepositToGoal(userId: string, goalId: string, deposit: Omit<D
     writeGoals(userId, goals);
   }
   return goal;
+}
+
+export async function saveGoalFirestore(
+  userId: string,
+  goal: Omit<Goal, "id" | "createdAt" | "deposits">
+): Promise<Goal> {
+  const newGoal: Goal = {
+    ...goal,
+    id: `goal_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    createdAt: new Date().toISOString(),
+    deposits: [],
+  };
+
+  try {
+    await setDoc(goalDoc(userId, newGoal.id), newGoal);
+    const cached = readGoals(userId).filter((g) => g.id !== newGoal.id);
+    writeGoals(userId, [newGoal, ...cached]);
+    return newGoal;
+  } catch {
+    writeGoals(userId, [newGoal, ...readGoals(userId)]);
+    return newGoal;
+  }
+}
+
+export async function addDepositToGoalFirestore(
+  userId: string,
+  goalId: string,
+  deposit: Omit<Deposit, "timestamp">
+): Promise<Goal | undefined> {
+  const newDeposit: Deposit = { ...deposit, timestamp: new Date().toISOString() };
+
+  try {
+    await updateDoc(goalDoc(userId, goalId), {
+      deposits: arrayUnion(newDeposit),
+    });
+  } catch {
+    // If Firestore update fails, local cache is still updated below.
+  }
+
+  const goals = readGoals(userId);
+  const goal = goals.find((g) => g.id === goalId);
+  if (goal) {
+    if (!goal.deposits) goal.deposits = [];
+    goal.deposits.push(newDeposit);
+    writeGoals(userId, goals);
+    return goal;
+  }
+
+  return getGoalByIdFirestore(userId, goalId);
 }
 
 export function saveNFT(userId: string, nft: AchievementNFT): void {

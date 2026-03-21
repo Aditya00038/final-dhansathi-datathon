@@ -50,6 +50,27 @@ export function ConnectBank({ mobile = false }: ConnectBankProps) {
   }
 
   if (bankAccount) {
+    if (mobile) {
+      return (
+        <div className="space-y-2 rounded-lg border border-border/60 bg-muted/30 p-3">
+          <div className="space-y-0.5">
+            <p className="text-sm font-semibold leading-none">{bankAccount.accountNickname}</p>
+            <p className="text-xs text-muted-foreground">{bankAccount.bankName}</p>
+            <p className="text-3xl font-bold pt-1">₹{bankAccount.balance.toLocaleString('en-IN')}</p>
+          </div>
+          <Button
+            onClick={handleDisconnect}
+            variant="destructive"
+            size="sm"
+            className="w-full"
+          >
+            <LogOut className="mr-2 h-4 w-4" />
+            Disconnect Account
+          </Button>
+        </div>
+      );
+    }
+
     return (
       <Popover>
         <PopoverTrigger asChild>

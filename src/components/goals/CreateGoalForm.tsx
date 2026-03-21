@@ -16,7 +16,7 @@ import { z } from "zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "../ui/form";
 import { useWallet } from "@/contexts/WalletContext";
 import { deployGoalContract } from "@/lib/blockchain";
-import { saveGoal } from "@/lib/local-store";
+import { saveGoalFirestore } from "@/lib/local-store";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -75,7 +75,7 @@ export default function CreateGoalForm() {
 
       toast({ title: "Contract Deployed!", description: `App ID: ${appId}. Now saving metadata...` });
 
-      saveGoal(user.uid, {
+      await saveGoalFirestore(user.uid, {
         name: data.name,
         appId,
       });

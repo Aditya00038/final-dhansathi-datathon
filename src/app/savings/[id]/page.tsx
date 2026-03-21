@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import type { NormalGoal } from "@/lib/types";
-import { getNormalGoalById } from "@/lib/normal-goal-store";
+import { getNormalGoalByIdFirestore } from "@/lib/normal-goal-store";
 import NormalGoalDetailsClient from "@/components/goals/NormalGoalDetailsClient";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -18,9 +18,9 @@ export default function SavingsGoalPage() {
   const id = params.id as string;
   const [goal, setGoal] = useState<NormalGoal | null | undefined>(undefined);
 
-  const refreshGoal = useCallback(() => {
+  const refreshGoal = useCallback(async () => {
     if (user && id) {
-      const found = getNormalGoalById(user.uid, id);
+      const found = await getNormalGoalByIdFirestore(user.uid, id);
       setGoal(found);
     }
   }, [id, user]);

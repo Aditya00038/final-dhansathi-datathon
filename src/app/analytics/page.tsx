@@ -18,8 +18,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { TrendingUp, Target, GitCommit, Wallet, Loader2 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
-import { getGoalsAndDeposits, getSavedSmsTransactions } from '@/lib/local-store';
-import { getAllNormalGoals } from '@/lib/normal-goal-store';
+import { getGoalsFirestore, getSavedSmsTransactions } from '@/lib/local-store';
+import { getAllNormalGoalsFirestore } from '@/lib/normal-goal-store';
 import { getGoalOnChainState } from '@/lib/blockchain';
 import { microAlgosToAlgos, formatCurrency, toDate } from '@/lib/utils';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -58,6 +58,13 @@ type SpendingTransaction = {
   merchant: string;
   type: 'debit' | 'credit';
   source: 'sms' | 'saving-goal';
+};
+
+type NormalGoalTransactionLike = {
+  id: string;
+  type: 'deposit' | 'withdrawal';
+  amount: number;
+  timestamp: string;
 };
 
 const PIE_COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#06b6d4', '#8b5cf6'];
@@ -132,6 +139,7 @@ function AnalyticsPage() {
 
   const [selectedSmsCategory, setSelectedSmsCategory] = useState<string>('all');
   const [selectedSmsDateRange, setSelectedSmsDateRange] = useState<string>('all');
+  const [normalGoalsForSpending, setNormalGoalsForSpending] = useState<Array<{ id: string; name: string; transactions: NormalGoalTransactionLike[] }>>([]);
 
   useEffect(() => {
     let mounted = true;
@@ -141,14 +149,19 @@ function AnalyticsPage() {
         if (mounted) {
           setGoals([]);
           setSelectedGoalId('');
+          setNormalGoalsForSpending([]);
           setLoading(false);
         }
         return;
       }
 
       setLoading(true);
-      const { goals: rawGoals } = getGoalsAndDeposits(user.uid);
+      const rawGoals = await getGoalsFirestore(user.uid);
       const typedGoals = (rawGoals || []) as LocalGoal[];
+      const loadedNormalGoals = await getAllNormalGoalsFirestore(user.uid);
+      if (mounted) {
+        setNormalGoalsForSpending(loadedNormalGoals as Array<{ id: string; name: string; transactions: NormalGoalTransactionLike[] }>);
+      }
 
       const resolved = await Promise.all(
         typedGoals.map(async (goal) => {
@@ -234,13 +247,10 @@ function AnalyticsPage() {
   );
 
   const savingsGoalSpendingTransactions: SpendingTransaction[] = useMemo(() => {
-    if (!user?.uid) return [];
-    const normalGoals = getAllNormalGoals(user.uid);
-
-    return normalGoals.flatMap((goal) =>
+    return normalGoalsForSpending.flatMap((goal) =>
       (goal.transactions || [])
-        .filter((tx) => tx.type === 'deposit' && tx.amount > 0)
-        .map((tx) => ({
+        .filter((tx: NormalGoalTransactionLike) => tx.type === 'deposit' && tx.amount > 0)
+        .map((tx: NormalGoalTransactionLike) => ({
           id: `sg_${goal.id}_${tx.id}`,
           amount: tx.amount,
           date: tx.timestamp,
@@ -249,7 +259,7 @@ function AnalyticsPage() {
           source: 'saving-goal' as const,
         }))
     );
-  }, [user?.uid]);
+  }, [normalGoalsForSpending]);
 
   const allDebitSpendingTransactions = useMemo(
     () => [...smsSpendingTransactions, ...savingsGoalSpendingTransactions]

@@ -17,10 +17,11 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "../ui/form";
-import { addDepositToGoal } from "@/lib/local-store";
+import { addDepositToGoalFirestore } from "@/lib/local-store";
 import { useAuth } from "@/contexts/AuthContext";
 import { useWallet } from "@/contexts/WalletContext";
 import { depositToGoal } from "@/lib/blockchain";
+import { useBankBalance } from "@/hooks/useBankBalance";
 
 type DepositDialogProps = {
   goalId: string;
@@ -43,6 +44,7 @@ export function DepositDialog({ goalId, goalName, appId, onDepositSuccess, trigg
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { user } = useAuth();
   const { activeAddress, connectWallet, isConnecting, signTransactions } = useWallet();
+  const { bankAccount } = useBankBalance();
 
   const form = useForm<DepositFormValues>({
     resolver: zodResolver(DepositSchema),
@@ -65,6 +67,15 @@ export function DepositDialog({ goalId, goalName, appId, onDepositSuccess, trigg
             description: "Please log in to make a deposit.",
         });
         return;
+    }
+
+    if (!bankAccount) {
+      toast({
+        variant: "destructive",
+        title: "Bank Not Connected",
+        description: "Please connect your bank account before making a deposit.",
+      });
+      return;
     }
 
     if (!activeAddress) {
@@ -97,7 +108,7 @@ export function DepositDialog({ goalId, goalName, appId, onDepositSuccess, trigg
       });
 
       const txId = await depositToGoal(appId, activeAddress, data.amount, signTransactions);
-      addDepositToGoal(user.uid, goalId, { amount: data.amount, txId });
+      await addDepositToGoalFirestore(user.uid, goalId, { amount: data.amount, txId });
 
       toast({
         title: "Deposit Successful",
@@ -151,9 +162,9 @@ export function DepositDialog({ goalId, goalName, appId, onDepositSuccess, trigg
                 </FormItem>
               )}
             />
-            <Button type="submit" className="w-full" disabled={isSubmitting || isConnecting}>
+            <Button type="submit" className="w-full" disabled={isSubmitting || isConnecting || !bankAccount}>
               {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              {isConnecting ? "Connecting Wallet..." : isSubmitting ? "Processing..." : "Confirm in Pera Wallet"}
+              {isConnecting ? "Connecting Wallet..." : isSubmitting ? "Processing..." : !bankAccount ? "Connect Bank First" : "Confirm in Pera Wallet"}
             </Button>
           </form>
         </Form>

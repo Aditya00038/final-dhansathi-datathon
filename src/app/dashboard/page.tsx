@@ -8,8 +8,8 @@ import FinancialOverview from "@/components/dashboard/FinancialOverview";
 import QuickActions from "@/components/dashboard/QuickActions";
 import GoalsList from "@/components/dashboard/GoalsList";
 import RecentActivity from "@/components/dashboard/RecentActivity";
-import { getGoals } from "@/lib/local-store";
-import { getAllNormalGoals } from "@/lib/normal-goal-store";
+import { getGoalsFirestore } from "@/lib/local-store";
+import { getAllNormalGoalsFirestore } from "@/lib/normal-goal-store";
 import { getGoalOnChainState } from "@/lib/blockchain";
 import type { Goal, GoalWithOnChainData, NormalGoal, Deposit } from "@/lib/types";
 import { fetchAlgoInrRate } from "@/lib/algo-inr";
@@ -28,7 +28,7 @@ export default function Dashboard() {
     try {
       await fetchAlgoInrRate();
       
-      const storedGoals = getGoals(user.uid);
+      const storedGoals = await getGoalsFirestore(user.uid);
       const goalsWithOnChain = await Promise.all(
         storedGoals.map(async (goal) => {
           try {
@@ -41,7 +41,7 @@ export default function Dashboard() {
       );
       setGoals(goalsWithOnChain);
 
-      const storedNormalGoals = getAllNormalGoals(user.uid);
+      const storedNormalGoals = await getAllNormalGoalsFirestore(user.uid);
       setNormalGoals(storedNormalGoals);
     } catch (err) {
       console.error("Error loading goals:", err);

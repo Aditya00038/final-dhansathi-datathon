@@ -144,7 +144,7 @@ export default function Navbar() {
       </header>
 
       {/* ───── Mobile Top Bar ───── */}
-      <header className="sticky top-0 z-50 w-full border-b border-border/60 bg-background/80 backdrop-blur-xl md:hidden">
+      <header className="sticky top-0 z-40 w-full border-b border-border/60 bg-background/80 backdrop-blur-xl md:hidden">
         <div className="px-4 flex h-16 items-center justify-between">
           <Link href="/dashboard" className="flex items-center gap-2">
             <Image
@@ -168,7 +168,7 @@ export default function Navbar() {
               <SheetTrigger asChild>
                 <Button variant="ghost" size="icon" className="h-10 w-10"><Menu className="h-5 w-5" /></Button>
               </SheetTrigger>
-              <SheetContent side="right" className="w-[280px] p-0">
+              <SheetContent side="right" className="w-[280px] p-0 !z-[70]">
                 <div className="flex flex-col h-full">
                   <div className="p-4 pb-3 border-b border-border">
                     <div className="flex items-center justify-between">
@@ -219,7 +219,7 @@ export default function Navbar() {
       </header>
 
       {/* ───── Mobile Bottom Navigation ───── */}
-      <nav className="fixed bottom-0 left-0 right-0 z-50 border-t border-border/60 bg-background/90 backdrop-blur-xl md:hidden safe-area-pb">
+      <nav className="fixed bottom-0 left-0 right-0 z-30 border-t border-border/60 bg-background/90 backdrop-blur-xl md:hidden safe-area-pb">
         <div className="grid grid-cols-5 h-14">
           {bottomNavItems.map((item) => {
             const active = isActive(item.href);

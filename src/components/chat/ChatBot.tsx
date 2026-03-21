@@ -18,9 +18,9 @@ import {
 import { cn } from "@/lib/utils";
 import { useWallet } from "@/contexts/WalletContext";
 import { getFinancialAdvice } from "@/ai/flows/ai-financial-advisor-flow";
-import { getGoals } from "@/lib/local-store";
+import { getGoalsFirestore } from "@/lib/local-store";
 import { getGoalOnChainState } from "@/lib/blockchain";
-import { getAllNormalGoals } from "@/lib/normal-goal-store";
+import { getAllNormalGoalsFirestore } from "@/lib/normal-goal-store";
 import { useAuth } from "@/contexts/AuthContext";
 import { Goal, Deposit } from "@/lib/types";
 
@@ -82,8 +82,8 @@ export default function ChatBot() {
 
     async function loadContext() {
       try {
-        const goals = getGoals(user.uid);
-        const normalGoals = getAllNormalGoals(user.uid);
+        const goals = await getGoalsFirestore(user.uid);
+        const normalGoals = await getAllNormalGoalsFirestore(user.uid);
 
         let totalSaved = 0;
         let totalTarget = 0;

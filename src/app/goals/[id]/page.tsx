@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { Goal } from "@/lib/types";
-import { getGoalById } from "@/lib/local-store";
+import { getGoalByIdFirestore } from "@/lib/local-store";
 import GoalDetailsClient from "@/components/goals/GoalDetailsClient";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -41,9 +41,13 @@ export default function GoalPage() {
       return;
     }
 
-    const found = getGoalById(user.uid, id) || null;
-    setGoal(found);
-    setIsLoadingGoal(false);
+    const loadGoal = async () => {
+      const found = (await getGoalByIdFirestore(user.uid, id)) || null;
+      setGoal(found);
+      setIsLoadingGoal(false);
+    };
+
+    loadGoal();
   }, [id, user, isAuthLoading]);
 
   if (isAuthLoading || isLoadingGoal) {

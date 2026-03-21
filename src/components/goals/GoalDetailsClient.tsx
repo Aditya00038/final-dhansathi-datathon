@@ -24,7 +24,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Loader2 } from 'lucide-react';
 import { calculateFinancialHealth } from '@/lib/financial-health';
 import { FinancialHealthIndicator } from './FinancialHealthIndicator';
-import { getGoalById, saveNFT, getNFTByGoalId } from '@/lib/local-store';
+import { getGoalByIdFirestore, saveNFT, getNFTByGoalId } from '@/lib/local-store';
 import GoalAdviceAgent from './GoalAdviceAgent';
 import { calculateAchievements, getTierBadgeStyle, type Achievement } from '@/lib/achievements';
 import { useBankBalance } from '@/hooks/useBankBalance';
@@ -69,7 +69,7 @@ export default function GoalDetailsClient({ goal: initialGoal }: GoalDetailsClie
       const data = await getGoalOnChainState(goal.appId);
       setOnChainGoal(data);
       
-      const updatedGoal = getGoalById(user.uid, goal.id);
+      const updatedGoal = await getGoalByIdFirestore(user.uid, goal.id);
       if (updatedGoal) {
         setGoal(updatedGoal);
 

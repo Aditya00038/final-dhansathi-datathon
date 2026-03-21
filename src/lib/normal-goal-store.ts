@@ -2,6 +2,15 @@
 // Users can deposit/withdraw anytime. All amounts are in INR.
 
 import type { NormalGoal, NormalGoalTransaction } from "./types";
+import { db } from "./firebase";
+import {
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  setDoc,
+} from "firebase/firestore";
 
 const NORMAL_GOALS_KEY = "dhansathi_normal_goals_v2";
 
@@ -28,14 +37,62 @@ function recalcBalance(goal: NormalGoal): number {
   }, 0);
 }
 
+function normalGoalsCollection(userId: string) {
+  return collection(db, "users", userId, "normalGoals");
+}
+
+function normalGoalDoc(userId: string, goalId: string) {
+  return doc(db, "users", userId, "normalGoals", goalId);
+}
+
 // ── public API ───────────────────────────────────────────────────────────────
 
 export function getAllNormalGoals(userId: string): NormalGoal[] {
   return readAllGoals().filter(g => g.userId === userId);
 }
 
+export async function getAllNormalGoalsFirestore(userId: string): Promise<NormalGoal[]> {
+  try {
+    const snap = await getDocs(normalGoalsCollection(userId));
+    const goals = snap.docs.map((d) => d.data() as NormalGoal);
+    const localGoals = getAllNormalGoals(userId);
+    const merged = new Map<string, NormalGoal>(goals.map((g) => [g.id, g]));
+
+    for (const localGoal of localGoals) {
+      if (!merged.has(localGoal.id)) {
+        merged.set(localGoal.id, localGoal);
+        try {
+          await setDoc(normalGoalDoc(userId, localGoal.id), localGoal);
+        } catch {
+          // Ignore backfill errors and keep local cache data.
+        }
+      }
+    }
+
+    const mergedGoals = Array.from(merged.values());
+    const others = readAllGoals().filter((g) => g.userId !== userId);
+    writeAllGoals([...others, ...mergedGoals]);
+    return mergedGoals;
+  } catch {
+    return getAllNormalGoals(userId);
+  }
+}
+
 export function getNormalGoalById(userId: string, id: string): NormalGoal | null {
   return readAllGoals().find((g) => g.id === id && g.userId === userId) ?? null;
+}
+
+export async function getNormalGoalByIdFirestore(userId: string, id: string): Promise<NormalGoal | null> {
+  try {
+    const snap = await getDoc(normalGoalDoc(userId, id));
+    if (!snap.exists()) return getNormalGoalById(userId, id);
+    const goal = snap.data() as NormalGoal;
+    const all = readAllGoals().filter((g) => !(g.userId === userId && g.id === id));
+    writeAllGoals([...all, goal]);
+    return goal;
+  } catch {
+    return getNormalGoalById(userId, id);
+  }
 }
 
 export function createNormalGoal(userId: string, data: {
@@ -61,6 +118,38 @@ export function createNormalGoal(userId: string, data: {
   };
   allGoals.push(newGoal);
   writeAllGoals(allGoals);
+  return newGoal;
+}
+
+export async function createNormalGoalFirestore(userId: string, data: {
+  name: string;
+  targetAmount: number;
+  deadline: string;
+  monthlyIncome?: number;
+  monthlySpending?: number;
+}): Promise<NormalGoal> {
+  const newGoal: NormalGoal = {
+    id: `normal_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    userId,
+    name: data.name,
+    targetAmount: data.targetAmount,
+    currentBalance: 0,
+    deadline: data.deadline,
+    createdAt: new Date().toISOString(),
+    monthlyIncome: data.monthlyIncome,
+    monthlySpending: data.monthlySpending,
+    transactions: [],
+    goalCompleted: false,
+  };
+
+  try {
+    await setDoc(normalGoalDoc(userId, newGoal.id), newGoal);
+  } catch {
+    // Fall back to local cache write below.
+  }
+
+  const all = readAllGoals().filter((g) => !(g.userId === userId && g.id === newGoal.id));
+  writeAllGoals([...all, newGoal]);
   return newGoal;
 }
 
@@ -91,6 +180,41 @@ export function depositToNormalGoal(
 
   writeAllGoals(allGoals);
   return allGoals[idx];
+}
+
+export async function depositToNormalGoalFirestore(
+  userId: string,
+  goalId: string,
+  amount: number,
+  note?: string
+): Promise<NormalGoal | null> {
+  const goal = await getNormalGoalByIdFirestore(userId, goalId);
+  if (!goal) return null;
+
+  const tx: NormalGoalTransaction = {
+    id: `tx_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    type: "deposit",
+    amount,
+    timestamp: new Date().toISOString(),
+    note,
+  };
+
+  const updated: NormalGoal = {
+    ...goal,
+    transactions: [...goal.transactions, tx],
+  };
+  updated.currentBalance = recalcBalance(updated);
+  updated.goalCompleted = updated.currentBalance >= updated.targetAmount;
+
+  try {
+    await setDoc(normalGoalDoc(userId, goalId), updated);
+  } catch {
+    // Keep local copy in sync even if Firestore write fails.
+  }
+
+  const all = readAllGoals().filter((g) => !(g.userId === userId && g.id === goalId));
+  writeAllGoals([...all, updated]);
+  return updated;
 }
 
 export function withdrawFromNormalGoal(
@@ -126,6 +250,42 @@ export function withdrawFromNormalGoal(
   return allGoals[idx];
 }
 
+export async function withdrawFromNormalGoalFirestore(
+  userId: string,
+  goalId: string,
+  amount: number,
+  note?: string
+): Promise<NormalGoal | null> {
+  const goal = await getNormalGoalByIdFirestore(userId, goalId);
+  if (!goal) return null;
+  if (amount > goal.currentBalance) return null;
+
+  const tx: NormalGoalTransaction = {
+    id: `tx_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    type: "withdrawal",
+    amount,
+    timestamp: new Date().toISOString(),
+    note,
+  };
+
+  const updated: NormalGoal = {
+    ...goal,
+    transactions: [...goal.transactions, tx],
+  };
+  updated.currentBalance = recalcBalance(updated);
+  updated.goalCompleted = updated.currentBalance >= updated.targetAmount;
+
+  try {
+    await setDoc(normalGoalDoc(userId, goalId), updated);
+  } catch {
+    // Keep local copy in sync even if Firestore write fails.
+  }
+
+  const all = readAllGoals().filter((g) => !(g.userId === userId && g.id === goalId));
+  writeAllGoals([...all, updated]);
+  return updated;
+}
+
 export function updateNormalGoalFinancials(
   userId: string,
   goalId: string,
@@ -142,7 +302,42 @@ export function updateNormalGoalFinancials(
   return allGoals[idx];
 }
 
+export async function updateNormalGoalFinancialsFirestore(
+  userId: string,
+  goalId: string,
+  data: { monthlyIncome?: number; monthlySpending?: number }
+): Promise<NormalGoal | null> {
+  const goal = await getNormalGoalByIdFirestore(userId, goalId);
+  if (!goal) return null;
+
+  const updated: NormalGoal = {
+    ...goal,
+    monthlyIncome: data.monthlyIncome !== undefined ? data.monthlyIncome : goal.monthlyIncome,
+    monthlySpending: data.monthlySpending !== undefined ? data.monthlySpending : goal.monthlySpending,
+  };
+
+  try {
+    await setDoc(normalGoalDoc(userId, goalId), updated);
+  } catch {
+    // Keep local copy in sync even if Firestore write fails.
+  }
+
+  const all = readAllGoals().filter((g) => !(g.userId === userId && g.id === goalId));
+  writeAllGoals([...all, updated]);
+  return updated;
+}
+
 export function deleteNormalGoal(userId: string, goalId: string) {
+  const remainingGoals = readAllGoals().filter((g) => !(g.id === goalId && g.userId === userId));
+  writeAllGoals(remainingGoals);
+}
+
+export async function deleteNormalGoalFirestore(userId: string, goalId: string) {
+  try {
+    await deleteDoc(normalGoalDoc(userId, goalId));
+  } catch {
+    // Fallback to local delete.
+  }
   const remainingGoals = readAllGoals().filter((g) => !(g.id === goalId && g.userId === userId));
   writeAllGoals(remainingGoals);
 }

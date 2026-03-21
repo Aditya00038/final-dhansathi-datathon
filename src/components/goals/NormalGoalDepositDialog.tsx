@@ -19,7 +19,7 @@ import { z } from "zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "../ui/form";
 import { useBankBalance } from "@/hooks/useBankBalance";
 import { useAuth } from "@/contexts/AuthContext";
-import { depositToNormalGoal } from "@/lib/normal-goal-store";
+import { depositToNormalGoalFirestore } from "@/lib/normal-goal-store";
 
 declare const Razorpay: any;
 
@@ -40,7 +40,7 @@ export function NormalGoalDepositDialog({ goalId, goalName, onDepositSuccess }: 
   const { toast } = useToast();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { user } = useAuth();
-  const { updateBalance } = useBankBalance();
+  const { bankAccount, updateBalance } = useBankBalance();
 
   const form = useForm<DepositFormValues>({
     resolver: zodResolver(DepositSchema),
@@ -70,6 +70,15 @@ export function NormalGoalDepositDialog({ goalId, goalName, onDepositSuccess }: 
         return;
     }
 
+    if (!bankAccount) {
+      toast({
+        variant: "destructive",
+        title: "Bank Not Connected",
+        description: "Please connect your bank account before making a deposit.",
+      });
+      return;
+    }
+
     setIsSubmitting(true);
 
     const options = {
@@ -85,7 +94,7 @@ export function NormalGoalDepositDialog({ goalId, goalName, onDepositSuccess }: 
       },
       handler: async (response: any) => {
         try {
-          depositToNormalGoal(user.uid, goalId, data.amount, `Razorpay TX: ${response.razorpay_payment_id}`);
+          await depositToNormalGoalFirestore(user.uid, goalId, data.amount, `Razorpay TX: ${response.razorpay_payment_id}`);
           await updateBalance(-data.amount);
           toast({
             title: "Deposit Successful!",
@@ -156,9 +165,9 @@ export function NormalGoalDepositDialog({ goalId, goalName, onDepositSuccess }: 
                 </FormItem>
               )}
             />
-            <Button type="submit" className="w-full" disabled={isSubmitting}>
+            <Button type="submit" className="w-full" disabled={isSubmitting || !bankAccount}>
               {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              {isSubmitting ? "Processing..." : "Confirm Deposit"}
+              {isSubmitting ? "Processing..." : !bankAccount ? "Connect Bank First" : "Confirm Deposit"}
             </Button>
           </form>
         </Form>
