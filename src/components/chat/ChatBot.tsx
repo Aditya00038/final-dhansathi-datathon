@@ -16,7 +16,6 @@ import {
   Minimize2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useWallet } from "@/contexts/WalletContext";
 import { getFinancialAdvice } from "@/ai/flows/ai-financial-advisor-flow";
 import { getGoalsFirestore, getSavedSmsTransactions } from "@/lib/local-store";
 import { getGoalOnChainState } from "@/lib/blockchain";
@@ -75,7 +74,6 @@ function renderMarkdown(text: string) {
 }
 
 export default function ChatBot() {
-  const { activeAddress } = useWallet();
   const { user } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -95,6 +93,17 @@ export default function ChatBot() {
   } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [buttonOffset, setButtonOffset] = useState({ x: 0, y: 0 });
+  const [windowOffset, setWindowOffset] = useState({ x: 0, y: 0 });
+  const [suppressOpenClick, setSuppressOpenClick] = useState(false);
+  const dragRef = useRef<{
+    target: "button" | "window" | null;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+    moved: boolean;
+  }>({ target: null, startX: 0, startY: 0, originX: 0, originY: 0, moved: false });
 
   // Load financial context when opened
   useEffect(() => {
@@ -236,6 +245,52 @@ export default function ChatBot() {
     }
   }, [isOpen]);
 
+  useEffect(() => {
+    const onPointerMove = (e: PointerEvent) => {
+      const drag = dragRef.current;
+      if (!drag.target) return;
+
+      const dx = e.clientX - drag.startX;
+      const dy = e.clientY - drag.startY;
+      if (Math.abs(dx) > 4 || Math.abs(dy) > 4) drag.moved = true;
+
+      if (drag.target === "button") {
+        setButtonOffset({ x: drag.originX + dx, y: drag.originY + dy });
+      } else {
+        setWindowOffset({ x: drag.originX + dx, y: drag.originY + dy });
+      }
+    };
+
+    const onPointerUp = () => {
+      if (dragRef.current.target === "button" && dragRef.current.moved) {
+        setSuppressOpenClick(true);
+      }
+      dragRef.current.target = null;
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
+    };
+  }, []);
+
+  const startDrag = (target: "button" | "window") => (e: React.PointerEvent) => {
+    if (e.button !== 0 && e.pointerType === "mouse") return;
+    const base = target === "button" ? buttonOffset : windowOffset;
+    dragRef.current = {
+      target,
+      startX: e.clientX,
+      startY: e.clientY,
+      originX: base.x,
+      originY: base.y,
+      moved: false,
+    };
+  };
+
   const handleSend = useCallback(
     async (messageText?: string) => {
       const text = messageText || input.trim();
@@ -296,15 +351,23 @@ export default function ChatBot() {
     [input, isLoading, messages, userContext]
   );
 
-  if (!activeAddress) return null;
+  if (!user) return null;
 
   return (
     <>
       {/* Floating Chat Button */}
       {!isOpen && (
         <button
-          onClick={() => setIsOpen(true)}
+          onPointerDown={startDrag("button")}
+          onClick={() => {
+            if (suppressOpenClick) {
+              setSuppressOpenClick(false);
+              return;
+            }
+            setIsOpen(true);
+          }}
           className="fixed bottom-[calc(5.25rem+env(safe-area-inset-bottom))] right-4 md:bottom-6 md:right-6 z-[70] h-14 w-14 rounded-full bg-primary text-primary-foreground ring-4 ring-background shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center"
+          style={{ transform: `translate(${buttonOffset.x}px, ${buttonOffset.y}px)` }}
           aria-label="Open AI Chat"
         >
           <MessageCircle className="h-6 w-6" />
@@ -314,9 +377,15 @@ export default function ChatBot() {
 
       {/* Chat Window */}
       {isOpen && (
-        <Card className="fixed left-3 right-3 md:left-auto bottom-[calc(5.25rem+env(safe-area-inset-bottom))] md:bottom-6 md:right-6 z-[70] w-auto max-w-[400px] h-[500px] md:h-[560px] flex flex-col shadow-2xl border-primary/20 overflow-hidden">
+        <Card
+          className="fixed left-3 right-3 md:left-auto bottom-[calc(5.25rem+env(safe-area-inset-bottom))] md:bottom-6 md:right-6 z-[70] w-auto max-w-[400px] h-[500px] md:h-[560px] flex flex-col shadow-2xl border-primary/20 overflow-hidden"
+          style={{ transform: `translate(${windowOffset.x}px, ${windowOffset.y}px)` }}
+        >
           {/* Header */}
-          <div className="flex items-center justify-between px-4 py-3 bg-primary text-primary-foreground rounded-t-lg">
+          <div
+            className="flex items-center justify-between px-4 py-3 bg-primary text-primary-foreground rounded-t-lg cursor-move touch-none"
+            onPointerDown={startDrag("window")}
+          >
             <div className="flex items-center gap-2">
               <div className="h-8 w-8 rounded-full bg-primary-foreground/20 flex items-center justify-center">
                 <Bot className="h-4 w-4" />

@@ -7,7 +7,7 @@ import { Toaster } from "@/components/ui/toaster";
 import ConditionalChatBot from "@/components/layout/ConditionalChatBot";
 import InstallPrompt from "@/components/pwa/InstallPrompt";
 import DevServiceWorkerCleanup from "@/components/pwa/DevServiceWorkerCleanup";
-import FloatingLanguageSelector from "@/components/layout/FloatingLanguageSelector";
+import ConditionalLanguageSelector from "@/components/layout/ConditionalLanguageSelector";
 import Script from "next/script";
 
 const inter = { className: "font-sans" };
@@ -87,7 +87,7 @@ export default function RootLayout({
               {children}
               <DevServiceWorkerCleanup />
               <ConditionalChatBot />
-              <FloatingLanguageSelector />
+              <ConditionalLanguageSelector />
               <InstallPrompt />
               <Toaster />
             </WalletProvider>

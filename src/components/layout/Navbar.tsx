@@ -51,6 +51,20 @@ const bottomNavItems = [
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
 ];
 
+const languageOptions = [
+  { value: "en", label: "English" },
+  { value: "hi", label: "हिंदी" },
+  { value: "mr", label: "मराठी" },
+  { value: "bn", label: "বাংলা" },
+  { value: "te", label: "తెలుగు" },
+  { value: "ta", label: "தமிழ்" },
+  { value: "gu", label: "ગુજરાતી" },
+  { value: "kn", label: "ಕನ್ನಡ" },
+  { value: "ml", label: "മലയാളം" },
+  { value: "pa", label: "ਪੰਜਾਬੀ" },
+  { value: "or", label: "ଓଡ଼ିଆ" },
+];
+
 export default function Navbar() {
   const pathname = usePathname();
   const { activeAddress, connectWallet, disconnectWallet, isConnecting } = useWallet();
@@ -59,8 +73,13 @@ export default function Navbar() {
   const { toast } = useToast();
   const [showLogoutDialog, setShowLogoutDialog] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const [mobileLang, setMobileLang] = useState("en");
 
-  useEffect(() => { setMounted(true); }, []);
+  useEffect(() => {
+    setMounted(true);
+    const saved = document.cookie.match(/(?:^|;\s*)googtrans=\/en\/([a-z]+)/i)?.[1] || "en";
+    setMobileLang(saved);
+  }, []);
 
   const handleLogout = async () => {
     await disconnectWallet();
@@ -82,6 +101,24 @@ export default function Navbar() {
     (href === "/goals/new" && pathname.startsWith("/goals")) ||
     (href === "/savings/new" && pathname.startsWith("/savings")) ||
     (href === "/sms-parser" && pathname.startsWith("/sms-parser"));
+
+  const applyMobileLanguage = (value: string) => {
+    const cookieValue = `/en/${value}`;
+    const maxAge = 60 * 60 * 24 * 365;
+    document.cookie = `googtrans=${cookieValue}; path=/; max-age=${maxAge}`;
+    if (window.location.hostname.includes(".")) {
+      document.cookie = `googtrans=${cookieValue}; domain=.${window.location.hostname}; path=/; max-age=${maxAge}`;
+    }
+
+    const combo = document.querySelector("select.goog-te-combo") as HTMLSelectElement | null;
+    if (combo) {
+      combo.value = value;
+      combo.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    setMobileLang(value);
+    window.location.reload();
+  };
 
   return (
     <>
@@ -198,6 +235,25 @@ export default function Navbar() {
                     ))}
                   </nav>
                   <div className="p-3 border-t border-border space-y-2">
+                    <div className="rounded-lg border border-border p-2 notranslate" translate="no">
+                      <label htmlFor="mobile-language" className="block text-xs text-muted-foreground mb-1 notranslate" translate="no">
+                        भाषा / Language
+                      </label>
+                      <select
+                        id="mobile-language"
+                        value={mobileLang}
+                        onChange={(e) => applyMobileLanguage(e.target.value)}
+                        className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm notranslate"
+                        aria-label="Change Language"
+                        translate="no"
+                      >
+                        {languageOptions.map((option) => (
+                          <option key={option.value} value={option.value} className="notranslate" translate="no">
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                     <ConnectBank mobile />
                     {activeAddress ? (
                       <div className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-muted text-xs font-mono">
