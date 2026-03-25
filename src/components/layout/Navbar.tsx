@@ -39,7 +39,7 @@ const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/savings/new", label: "Savings", icon: PiggyBank },
   { href: "/goals/new", label: "On-Chain", icon: Target },
-  { href: "/sms-parser", label: "SMS Paste", icon: ClipboardPaste },
+  { href: "/sms-parser", label: "Transaction Parser", icon: ClipboardPaste },
   { href: "/analytics", label: "Analytics", icon: BarChart3 },
 ];
 
@@ -97,7 +97,9 @@ export default function Navbar() {
               className="h-8 w-8 rounded-lg object-cover shadow-sm group-hover:shadow-md transition-shadow"
               priority
             />
-            <span className="text-lg font-bold tracking-tight">DhanSathi</span>
+            <span className="flex items-center gap-1.5 text-lg font-bold tracking-tight">
+              DhanSathi
+            </span>
           </Link>
 
           <nav className="flex items-center gap-0.5">
@@ -155,7 +157,9 @@ export default function Navbar() {
               className="h-7 w-7 rounded-lg object-cover"
               priority
             />
-            <span className="text-base font-bold tracking-tight">DhanSathi</span>
+            <span className="flex items-center gap-1.5 text-base font-bold tracking-tight">
+              DhanSathi
+            </span>
           </Link>
 
           <div className="flex items-center gap-1">

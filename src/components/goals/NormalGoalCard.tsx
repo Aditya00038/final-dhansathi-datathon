@@ -100,7 +100,7 @@ export default function NormalGoalCard({ goal }: NormalGoalCardProps) {
             )}
             <span>
               {prediction.savingRate > 0
-                ? `Save ₹${prediction.requiredPerWeek.toLocaleString("en-IN")}/week to stay on track`
+                ? `Save ₹${Math.ceil(prediction.requiredPerWeek / 7).toLocaleString("en-IN")}/day to stay on track`
                 : "Start saving to see predictions"}
             </span>
           </div>

@@ -18,11 +18,26 @@ import {
 import { cn } from "@/lib/utils";
 import { useWallet } from "@/contexts/WalletContext";
 import { getFinancialAdvice } from "@/ai/flows/ai-financial-advisor-flow";
-import { getGoalsFirestore } from "@/lib/local-store";
+import { getGoalsFirestore, getSavedSmsTransactions } from "@/lib/local-store";
 import { getGoalOnChainState } from "@/lib/blockchain";
 import { getAllNormalGoalsFirestore } from "@/lib/normal-goal-store";
 import { useAuth } from "@/contexts/AuthContext";
 import { Goal, Deposit } from "@/lib/types";
+
+interface GoalSummary {
+  name: string;
+  type: "on-chain" | "off-chain";
+  targetAmount: number;
+  currentSaved: number;
+  deadline: string;
+  currency: "ALGO" | "INR";
+  goalCompleted: boolean;
+  transactions?: Array<{
+    type: "deposit" | "withdrawal";
+    amount: number;
+    timestamp: string;
+  }>;
+}
 
 interface Message {
   id: string;
@@ -72,6 +87,11 @@ export default function ChatBot() {
     activeGoals: number;
     completedGoals: number;
     recentDeposits: { amount: number; date: string }[];
+    goals: GoalSummary[];
+    totalSavedInr: number;
+    totalTargetInr: number;
+    todaySpending: { amount: number; merchant: string; category: string }[];
+    todayTotal: number;
   } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -85,35 +105,91 @@ export default function ChatBot() {
         const goals = await getGoalsFirestore(user.uid);
         const normalGoals = await getAllNormalGoalsFirestore(user.uid);
 
-        let totalSaved = 0;
-        let totalTarget = 0;
+        let totalSaved = 0; // ALGO
+        let totalTarget = 0; // ALGO
+        let totalSavedInr = 0; // INR
+        let totalTargetInr = 0; // INR
         let completedGoals = 0;
         const allDeposits: Deposit[] = [];
+        const goalSummaries: GoalSummary[] = [];
 
+        // Process on-chain goals (ALGO)
         for (const goal of goals) {
           if (goal.deposits) {
             allDeposits.push(...goal.deposits);
           }
           try {
             const onChain = await getGoalOnChainState(goal.appId);
-            totalSaved += (onChain.totalSaved || 0) / 1_000_000;
-            totalTarget += (onChain.targetAmount || 0) / 1_000_000;
+            const saved = (onChain.totalSaved || 0) / 1_000_000;
+            const target = (onChain.targetAmount || 0) / 1_000_000;
+            totalSaved += saved;
+            totalTarget += target;
             if (onChain.goalCompleted) completedGoals++;
+
+            goalSummaries.push({
+              name: goal.name,
+              type: "on-chain",
+              targetAmount: target,
+              currentSaved: saved,
+              deadline: goal.deadline || new Date().toISOString(),
+              currency: "ALGO",
+              goalCompleted: onChain.goalCompleted,
+              transactions: (goal.deposits || []).map((d) => ({
+                type: "deposit",
+                amount: d.amount,
+                timestamp: d.timestamp,
+              })),
+            });
           } catch {
-            // Skip
+            // Skip failed on-chain lookups
           }
         }
 
-        // Also include normal goals context
+        // Process off-chain (normal) goals (INR)
         for (const ng of normalGoals) {
+          totalSavedInr += ng.currentBalance || 0;
+          totalTargetInr += ng.targetAmount || 0;
           if (ng.goalCompleted) completedGoals++;
+
+          goalSummaries.push({
+            name: ng.name,
+            type: "off-chain",
+            targetAmount: ng.targetAmount,
+            currentSaved: ng.currentBalance || 0,
+            deadline: ng.deadline,
+            currency: "INR",
+            goalCompleted: ng.goalCompleted,
+            transactions: (ng.transactions || []).map((tx) => ({
+              type: tx.type,
+              amount: tx.amount,
+              timestamp: tx.timestamp,
+            })),
+          });
         }
+
+        // Get today's spending
+        const todayDate = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+        const allTransactions = await getSavedSmsTransactions(user.uid);
+        const todayTransactions = allTransactions.filter(t => {
+          const txDate = typeof t.date === 'string' ? t.date : new Date(t.date).toISOString().split('T')[0];
+          return txDate === todayDate && t.type === 'debit';
+        });
+        const todayTotal = todayTransactions.reduce((sum, t) => sum + (t.amount || 0), 0);
 
         setUserContext({
           totalSaved,
           totalTarget,
+          totalSavedInr,
+          totalTargetInr,
           activeGoals: goals.length + normalGoals.filter(g => !g.goalCompleted).length - completedGoals,
           completedGoals,
+          goals: goalSummaries,
+          todaySpending: todayTransactions.map(t => ({
+            amount: t.amount,
+            merchant: t.merchant,
+            category: t.source === 'cash-manual' ? 'Cash' : 'Bank',
+          })),
+          todayTotal,
           recentDeposits: allDeposits.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).slice(0, 5).map((d) => ({
             amount: d.amount,
             date: new Date(d.timestamp).toLocaleDateString(),
@@ -228,7 +304,7 @@ export default function ChatBot() {
       {!isOpen && (
         <button
           onClick={() => setIsOpen(true)}
-          className="fixed bottom-20 right-4 md:bottom-6 md:right-6 z-[60] h-14 w-14 rounded-full bg-primary text-primary-foreground shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center group"
+          className="fixed bottom-[calc(5.25rem+env(safe-area-inset-bottom))] right-4 md:bottom-6 md:right-6 z-[70] h-14 w-14 rounded-full bg-primary text-primary-foreground ring-4 ring-background shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center"
           aria-label="Open AI Chat"
         >
           <MessageCircle className="h-6 w-6" />
@@ -238,7 +314,7 @@ export default function ChatBot() {
 
       {/* Chat Window */}
       {isOpen && (
-        <Card className="fixed bottom-20 right-4 md:bottom-6 md:right-6 z-[60] w-[calc(100vw-2rem)] max-w-[400px] h-[500px] md:h-[560px] flex flex-col shadow-2xl border-primary/20 overflow-hidden">
+        <Card className="fixed left-3 right-3 md:left-auto bottom-[calc(5.25rem+env(safe-area-inset-bottom))] md:bottom-6 md:right-6 z-[70] w-auto max-w-[400px] h-[500px] md:h-[560px] flex flex-col shadow-2xl border-primary/20 overflow-hidden">
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 bg-primary text-primary-foreground rounded-t-lg">
             <div className="flex items-center gap-2">

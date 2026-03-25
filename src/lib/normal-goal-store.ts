@@ -87,9 +87,28 @@ export async function getNormalGoalByIdFirestore(userId: string, id: string): Pr
     const snap = await getDoc(normalGoalDoc(userId, id));
     if (!snap.exists()) return getNormalGoalById(userId, id);
     const goal = snap.data() as NormalGoal;
+    const localGoal = getNormalGoalById(userId, id);
+
+    // If local cache has newer transactions than Firestore, prefer local for UI freshness.
+    const goalToUse = localGoal && (
+      (localGoal.transactions?.length || 0) > (goal.transactions?.length || 0) ||
+      (new Date(localGoal.updatedAt || localGoal.createdAt || 0).getTime() >
+        new Date(goal.updatedAt || goal.createdAt || 0).getTime())
+    )
+      ? localGoal
+      : goal;
+
+    if (goalToUse === localGoal) {
+      try {
+        await setDoc(normalGoalDoc(userId, id), localGoal);
+      } catch {
+        // Ignore backfill errors and keep local state.
+      }
+    }
+
     const all = readAllGoals().filter((g) => !(g.userId === userId && g.id === id));
-    writeAllGoals([...all, goal]);
-    return goal;
+    writeAllGoals([...all, goalToUse]);
+    return goalToUse;
   } catch {
     return getNormalGoalById(userId, id);
   }
@@ -417,6 +436,7 @@ export function getAIGoalAdvice(goal: NormalGoal): string {
   const income = goal.monthlyIncome || 0;
   const spending = goal.monthlySpending || 0;
   const monthlySavingsCapacity = income - spending;
+  const requiredPerDay = Math.ceil(prediction.requiredPerWeek / 7);
 
   let advice = "";
 
@@ -429,14 +449,14 @@ export function getAIGoalAdvice(goal: NormalGoal): string {
     advice += `Based on your income (₹${income.toLocaleString("en-IN")}) and spending (₹${spending.toLocaleString("en-IN")}), you can save ₹${monthlySavingsCapacity.toLocaleString("en-IN")}/month (${savingsPercent}% of income). `;
 
     if (monthlySavingsCapacity >= prediction.requiredPerMonth) {
-      advice += `You should save ₹${Math.ceil(prediction.requiredPerWeek).toLocaleString("en-IN")}/week to reach your "${goal.name}" goal in ${prediction.weeksLeft} weeks. This is well within your capacity! `;
+      advice += `You should save ₹${requiredPerDay.toLocaleString("en-IN")}/day to reach your "${goal.name}" goal in ${prediction.weeksLeft} weeks. This is well within your capacity! `;
     } else if (monthlySavingsCapacity > 0) {
       advice += `You need ₹${Math.ceil(prediction.requiredPerMonth).toLocaleString("en-IN")}/month but can only save ₹${monthlySavingsCapacity.toLocaleString("en-IN")}/month. Consider extending your deadline or reducing expenses. `;
     } else {
       advice += `Your spending exceeds your income. Try to reduce expenses by at least ₹${Math.ceil(prediction.requiredPerMonth).toLocaleString("en-IN")}/month to start saving. `;
     }
   } else {
-    advice += `You should save ₹${Math.ceil(prediction.requiredPerWeek).toLocaleString("en-IN")}/week to reach your "${goal.name}" goal in ${prediction.weeksLeft} weeks. `;
+    advice += `You should save ₹${requiredPerDay.toLocaleString("en-IN")}/day to reach your "${goal.name}" goal in ${prediction.weeksLeft} weeks. `;
     advice += `Add your monthly income and spending for personalized advice. `;
   }
 

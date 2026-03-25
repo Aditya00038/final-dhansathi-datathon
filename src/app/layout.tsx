@@ -4,7 +4,7 @@ import { ThemeProvider } from "next-themes";
 import { WalletProvider } from "@/contexts/WalletContext";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { Toaster } from "@/components/ui/toaster";
-import ChatBot from "@/components/chat/ChatBot";
+import ConditionalChatBot from "@/components/layout/ConditionalChatBot";
 import InstallPrompt from "@/components/pwa/InstallPrompt";
 import DevServiceWorkerCleanup from "@/components/pwa/DevServiceWorkerCleanup";
 import FloatingLanguageSelector from "@/components/layout/FloatingLanguageSelector";
@@ -86,7 +86,7 @@ export default function RootLayout({
             <WalletProvider>
               {children}
               <DevServiceWorkerCleanup />
-              <ChatBot />
+              <ConditionalChatBot />
               <FloatingLanguageSelector />
               <InstallPrompt />
               <Toaster />

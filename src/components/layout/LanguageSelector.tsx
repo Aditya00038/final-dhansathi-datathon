@@ -1,6 +1,5 @@
 'use client';
 
-import { Globe } from "lucide-react";
 import { useEffect, useRef, useId } from "react";
 
 declare global {
@@ -74,7 +73,6 @@ export default function LanguageSelector() {
 
   return (
     <div className="lang-selector-wrapper">
-      <Globe className="lang-selector-icon" />
       <div id={elementId} ref={elementRef} className="google-translate-widget"></div>
     </div>
   );

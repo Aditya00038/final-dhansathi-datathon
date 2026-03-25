@@ -2,144 +2,179 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import {
-  BarChart,
   Bar,
-  PieChart,
-  Pie,
+  BarChart,
+  CartesianGrid,
   Cell,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
   XAxis,
   YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  CartesianGrid,
 } from 'recharts';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Badge } from '@/components/ui/badge';
-import { TrendingUp, Target, GitCommit, Wallet, Loader2 } from 'lucide-react';
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  where,
+} from 'firebase/firestore';
+import { Loader2, TrendingDown, Wallet, PiggyBank, ReceiptText } from 'lucide-react';
+import { db } from '@/lib/firebase';
 import { useAuth } from '@/contexts/AuthContext';
-import { getGoalsFirestore, getSavedSmsTransactions } from '@/lib/local-store';
 import { getAllNormalGoalsFirestore } from '@/lib/normal-goal-store';
-import { getGoalOnChainState } from '@/lib/blockchain';
-import { microAlgosToAlgos, formatCurrency, toDate } from '@/lib/utils';
-import { useIsMobile } from '@/hooks/use-mobile';
+import { getSavedSmsTransactions } from '@/lib/local-store';
 import AuthGuard from '@/components/auth/AuthGuard';
 import Navbar from '@/components/layout/Navbar';
-import type { SavedSmsTransaction } from '@/lib/types';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Progress } from '@/components/ui/progress';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
-type DepositRecord = {
+type TxType = 'debit' | 'credit';
+
+type TransactionDoc = {
+  id: string;
+  userId: string;
   amount: number;
-  txId: string;
-  timestamp: string | number | Date;
-};
-
-type LocalGoal = {
-  id: string;
-  name: string;
-  appId: number;
-  deposits?: DepositRecord[];
-};
-
-type GoalAnalytics = {
-  id: string;
-  name: string;
-  appId: number;
-  targetAlgo: number;
-  savedAlgo: number;
-  progressPct: number;
-  deposits: DepositRecord[];
-  onChainOk: boolean;
-};
-
-type SpendingTransaction = {
-  id: string;
-  amount: number;
-  date: string;
   merchant: string;
-  type: 'debit' | 'credit';
-  source: 'sms' | 'saving-goal';
+  category?: string;
+  date?: unknown;
+  source?: string;
+  type?: TxType;
+  createdAt?: unknown;
 };
 
-type NormalGoalTransactionLike = {
+type NormalGoalLike = {
   id: string;
-  type: 'deposit' | 'withdrawal';
-  amount: number;
-  timestamp: string;
+  name: string;
+  targetAmount: number;
+  currentBalance: number;
 };
 
 const PIE_COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#06b6d4', '#8b5cf6'];
 
-function buildMonthlySavings(goals: GoalAnalytics[]) {
-  const bucket = new Map<string, number>();
-
-  goals.forEach((goal) => {
-    goal.deposits.forEach((d) => {
-      const date = toDate(d.timestamp);
-      if (isNaN(date.getTime())) return;
-      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-      bucket.set(key, (bucket.get(key) || 0) + d.amount);
-    });
-  });
-
-  return Array.from(bucket.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .slice(-6)
-    .map(([month, amount]) => ({ month, amount }));
+function formatInr(value: number): string {
+  return `₹${Math.round(value).toLocaleString('en-IN')}`;
 }
 
-function buildGoalDepositBars(goal: GoalAnalytics | undefined) {
-  if (!goal) return [];
+function toDate(value: unknown): Date | null {
+  if (!value) return null;
 
-  return [...goal.deposits]
-    .sort((a, b) => toDate(a.timestamp).getTime() - toDate(b.timestamp).getTime())
-    .map((d) => ({
-      date: toDate(d.timestamp).toLocaleDateString(),
-      amount: d.amount,
-    }));
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+
+  if (typeof value === 'string') {
+    // Special handling for ISO date strings (YYYY-MM-DD) to preserve local date
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      const [year, month, day] = value.split('-').map(Number);
+      if (!isNaN(year) && !isNaN(month) && !isNaN(day)) {
+        const d = new Date(year, month - 1, day, 0, 0, 0, 0);
+        return Number.isNaN(d.getTime()) ? null : d;
+      }
+    }
+    // Handle other date formats as-is
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  if (typeof value === 'number') {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  if (typeof value === 'object' && value !== null) {
+    const maybeTimestamp = value as { toDate?: () => Date; seconds?: number; nanoseconds?: number };
+
+    if (typeof maybeTimestamp.toDate === 'function') {
+      const parsed = maybeTimestamp.toDate();
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+
+    if (typeof maybeTimestamp.seconds === 'number') {
+      const parsed = new Date(maybeTimestamp.seconds * 1000);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+  }
+
+  return null;
 }
 
-function parseMerchantLabel(label: string): { brand: string; category: string } {
-  const m = label.match(/^(.*?)\s*\((.*?)\)\s*$/);
-  if (!m) return { brand: label, category: 'Others' };
-  return { brand: m[1], category: m[2] };
+function getDayKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-function formatInr(amount: number): string {
-  return `₹${amount.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+function getWeekStart(d: Date): Date {
+  const x = new Date(d);
+  const day = x.getDay();
+  x.setDate(x.getDate() - day);
+  x.setHours(0, 0, 0, 0);
+  return x;
 }
 
-function formatDisplayDate(dateStr: string): string {
-  const d = new Date(dateStr);
-  if (Number.isNaN(d.getTime())) return dateStr;
-  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+function isExpense(tx: TransactionDoc): boolean {
+  if (!Number.isFinite(tx.amount) || tx.amount <= 0) return false;
+  return tx.type !== 'credit';
 }
 
-function normalizeLegacyMerchantLabel(label: string): string {
-  const current = parseMerchantLabel(label);
-  if (current.category !== 'Others' || /\(.+\)/.test(label)) return label;
+function CustomPieTooltip({ active, payload }: any) {
+  if (active && payload && payload.length > 0) {
+    const { name, value } = payload[0];
+    return (
+      <div className='bg-black/90 text-white px-3 py-2 rounded-lg border border-white/20'>
+        <p className='font-semibold'>{name}</p>
+        <p className='text-sm'>{formatInr(value)}</p>
+      </div>
+    );
+  }
+  return null;
+}
 
-  const lower = label.toLowerCase();
-  if (/kfc|kfcsapphire/.test(lower)) return 'KFC (Food)';
-  if (/swiggy/.test(lower)) return 'Swiggy (Food)';
-  if (/zomato/.test(lower)) return 'Zomato (Food)';
-  if (/myntra/.test(lower)) return 'Myntra (Groceries)';
-  if (/meesho/.test(lower)) return 'Meesho (Groceries)';
-  if (/blinkit/.test(lower)) return 'Blinkit (Groceries)';
-  if (/zepto/.test(lower)) return 'Zepto (Groceries)';
-  return label;
+function CustomLineTooltip({ active, payload }: any) {
+  if (active && payload && payload.length > 0) {
+    const data = payload[0].payload; // Full data object
+    const { value } = payload[0];
+    const fullDate = data.date; // Full date in YYYY-MM-DD or YYYY-MM format
+    
+    let displayDate = fullDate;
+    // Format YYYY-MM-DD to DD-MM-YYYY
+    if (fullDate && fullDate.length === 10 && fullDate.includes('-')) {
+      const [year, month, day] = fullDate.split('-');
+      displayDate = `${day}-${month}-${year}`;
+    }
+    // Format YYYY-MM to MM-YYYY
+    else if (fullDate && fullDate.length === 7 && fullDate.includes('-')) {
+      const [year, month] = fullDate.split('-');
+      displayDate = `${month}-${year}`;
+    }
+    
+    return (
+      <div className='bg-black/90 text-white px-3 py-2 rounded-lg border border-white/20'>
+        <p className='text-sm font-medium'>Date: {displayDate}</p>
+        <p className='text-sm'>Amount: {formatInr(value)}</p>
+      </div>
+    );
+  }
+  return null;
+}
+
+function normalizeCategory(raw?: string): string {
+  if (!raw || raw.trim().length === 0) return 'Others';
+  const value = raw.trim();
+  return value.length > 0 ? value : 'Others';
 }
 
 function AnalyticsPage() {
-  const isMobile = useIsMobile();
   const { user } = useAuth();
 
   const [loading, setLoading] = useState(true);
-  const [goals, setGoals] = useState<GoalAnalytics[]>([]);
-  const [selectedGoalId, setSelectedGoalId] = useState<string>('');
-
-  const [selectedSmsCategory, setSelectedSmsCategory] = useState<string>('all');
-  const [selectedSmsDateRange, setSelectedSmsDateRange] = useState<string>('all');
-  const [normalGoalsForSpending, setNormalGoalsForSpending] = useState<Array<{ id: string; name: string; transactions: NormalGoalTransactionLike[] }>>([]);
+  const [transactions, setTransactions] = useState<TransactionDoc[]>([]);
+  const [balance, setBalance] = useState(0);
+  const [savingsGoals, setSavingsGoals] = useState<NormalGoalLike[]>([]);
+  const [timeRange, setTimeRange] = useState<'30days' | 'week' | 'month' | 'year' | 'all'>('30days');
+  const [showAllTransactions, setShowAllTransactions] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -147,62 +182,78 @@ function AnalyticsPage() {
     const load = async () => {
       if (!user?.uid) {
         if (mounted) {
-          setGoals([]);
-          setSelectedGoalId('');
-          setNormalGoalsForSpending([]);
+          setTransactions([]);
+          setBalance(0);
+          setSavingsGoals([]);
           setLoading(false);
         }
         return;
       }
 
       setLoading(true);
-      const rawGoals = await getGoalsFirestore(user.uid);
-      const typedGoals = (rawGoals || []) as LocalGoal[];
-      const loadedNormalGoals = await getAllNormalGoalsFirestore(user.uid);
-      if (mounted) {
-        setNormalGoalsForSpending(loadedNormalGoals as Array<{ id: string; name: string; transactions: NormalGoalTransactionLike[] }>);
+
+      try {
+        const txQuery = query(collection(db, 'transactions'), where('userId', '==', user.uid));
+        const txSnap = await getDocs(txQuery);
+        const txsFromFirestore: TransactionDoc[] = txSnap.docs.map((d) => {
+          const data = d.data() as Omit<TransactionDoc, 'id'>;
+          return { id: d.id, ...data };
+        });
+
+        const localSaved = getSavedSmsTransactions(user.uid);
+        const localTxs: TransactionDoc[] = localSaved.map((tx) => ({
+          id: tx.id,
+          userId: tx.userId,
+          amount: tx.amount,
+          merchant: tx.merchant,
+          category: (() => {
+            const m = tx.merchant.match(/\(([^)]+)\)\s*$/);
+            return m && m[1] ? m[1].trim() : 'Others';
+          })(),
+          date: tx.date,
+          source: tx.source,
+          type: tx.type,
+          createdAt: tx.createdAt,
+        }));
+
+        const deduped = new Map<string, TransactionDoc>();
+        txsFromFirestore.forEach((tx) => {
+          const key = `${tx.amount}|${String(tx.date || '')}|${(tx.merchant || '').toLowerCase()}|${tx.type || ''}`;
+          deduped.set(key, tx);
+        });
+        localTxs.forEach((tx) => {
+          const key = `${tx.amount}|${String(tx.date || '')}|${(tx.merchant || '').toLowerCase()}|${tx.type || ''}`;
+          if (!deduped.has(key)) deduped.set(key, tx);
+        });
+        const txs = Array.from(deduped.values());
+
+        const userSnap = await getDoc(doc(db, 'users', user.uid));
+        const bankSnap = await getDoc(doc(db, 'bank_balances', user.uid));
+
+        const userBalance = userSnap.exists() ? Number((userSnap.data() as { balance?: number }).balance) : NaN;
+        const bankBalance = bankSnap.exists() ? Number((bankSnap.data() as { balance?: number }).balance) : NaN;
+        const resolvedBalance = Number.isFinite(userBalance) ? userBalance : Number.isFinite(bankBalance) ? bankBalance : 0;
+
+        const normalGoals = await getAllNormalGoalsFirestore(user.uid);
+        const goalData = normalGoals.map((g) => ({
+          id: g.id,
+          name: g.name,
+          targetAmount: g.targetAmount,
+          currentBalance: g.currentBalance,
+        }));
+
+        if (!mounted) return;
+        setTransactions(txs);
+        setBalance(resolvedBalance);
+        setSavingsGoals(goalData);
+      } catch {
+        if (!mounted) return;
+        setTransactions([]);
+        setBalance(0);
+        setSavingsGoals([]);
+      } finally {
+        if (mounted) setLoading(false);
       }
-
-      const resolved = await Promise.all(
-        typedGoals.map(async (goal) => {
-          const deposits = Array.isArray(goal.deposits) ? goal.deposits : [];
-          const localSaved = deposits.reduce((sum, d) => sum + (d.amount || 0), 0);
-
-          try {
-            const onChain = await getGoalOnChainState(goal.appId);
-            const targetAlgo = microAlgosToAlgos(onChain.targetAmount || 0);
-            const savedAlgo = microAlgosToAlgos(onChain.totalSaved || 0);
-            const progressPct = targetAlgo > 0 ? Math.min(100, (savedAlgo / targetAlgo) * 100) : 0;
-
-            return {
-              id: goal.id,
-              name: goal.name,
-              appId: goal.appId,
-              targetAlgo,
-              savedAlgo,
-              progressPct,
-              deposits,
-              onChainOk: true,
-            } as GoalAnalytics;
-          } catch {
-            return {
-              id: goal.id,
-              name: goal.name,
-              appId: goal.appId,
-              targetAlgo: 0,
-              savedAlgo: localSaved,
-              progressPct: 0,
-              deposits,
-              onChainOk: false,
-            } as GoalAnalytics;
-          }
-        })
-      );
-
-      if (!mounted) return;
-      setGoals(resolved);
-      setSelectedGoalId((prev) => prev || resolved[0]?.id || '');
-      setLoading(false);
     };
 
     load();
@@ -211,294 +262,515 @@ function AnalyticsPage() {
     };
   }, [user?.uid]);
 
-  const selectedGoal = useMemo(() => goals.find((g) => g.id === selectedGoalId), [goals, selectedGoalId]);
-
-  const totalSaved = useMemo(() => goals.reduce((sum, g) => sum + g.savedAlgo, 0), [goals]);
-  const totalTarget = useMemo(() => goals.reduce((sum, g) => sum + g.targetAlgo, 0), [goals]);
-  const totalDepositCount = useMemo(() => goals.reduce((sum, g) => sum + g.deposits.length, 0), [goals]);
-  const avgProgress = totalTarget > 0 ? (totalSaved / totalTarget) * 100 : 0;
-
-  const pieChartData = useMemo(
-    () => goals.map((g) => ({ name: g.name, value: g.savedAlgo })).filter((x) => x.value > 0),
-    [goals]
+  const transactionsWithDate = useMemo(
+    () => transactions.map((tx) => ({
+      ...tx,
+      parsedDate: toDate(tx.date) || toDate(tx.createdAt),
+    })),
+    [transactions]
   );
 
-  const monthlySavingsData = useMemo(() => buildMonthlySavings(goals), [goals]);
-  const goalDepositBars = useMemo(() => buildGoalDepositBars(selectedGoal), [selectedGoal]);
-  const pieOuterRadius = isMobile ? 78 : 110;
-
-  const smsTransactions: SavedSmsTransaction[] = useMemo(
-    () => (user?.uid ? getSavedSmsTransactions(user.uid) : []),
-    [user?.uid]
+  const expenseTransactions = useMemo(
+    () => transactionsWithDate.filter((tx) => tx.parsedDate && isExpense(tx)),
+    [transactionsWithDate]
   );
 
-  const smsSpendingTransactions: SpendingTransaction[] = useMemo(
-    () => smsTransactions
-      .filter((tx) => tx.type === 'debit' && tx.amount > 0)
-      .map((tx) => ({
-        id: tx.id,
-        amount: tx.amount,
-        date: tx.date,
-        merchant: normalizeLegacyMerchantLabel(tx.merchant),
-        type: 'debit' as const,
-        source: 'sms' as const,
-      })),
-    [smsTransactions]
-  );
+  const now = useMemo(() => new Date(), []);
 
-  const savingsGoalSpendingTransactions: SpendingTransaction[] = useMemo(() => {
-    return normalGoalsForSpending.flatMap((goal) =>
-      (goal.transactions || [])
-        .filter((tx: NormalGoalTransactionLike) => tx.type === 'deposit' && tx.amount > 0)
-        .map((tx: NormalGoalTransactionLike) => ({
-          id: `sg_${goal.id}_${tx.id}`,
-          amount: tx.amount,
-          date: tx.timestamp,
-          merchant: `${goal.name} (Savings Goal)`,
-          type: 'debit' as const,
-          source: 'saving-goal' as const,
-        }))
-    );
-  }, [normalGoalsForSpending]);
+  const totalSpentThisMonth = useMemo(() => {
+    return expenseTransactions.reduce((sum, tx) => {
+      const d = tx.parsedDate as Date;
+      const sameMonth = d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+      return sameMonth ? sum + tx.amount : sum;
+    }, 0);
+  }, [expenseTransactions, now]);
 
-  const allDebitSpendingTransactions = useMemo(
-    () => [...smsSpendingTransactions, ...savingsGoalSpendingTransactions]
-      .filter((tx) => tx.type === 'debit' && tx.amount > 0)
-      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()),
-    [smsSpendingTransactions, savingsGoalSpendingTransactions]
-  );
+  const totalSaved = useMemo(() => {
+    const fromGoals = savingsGoals.reduce((sum, g) => sum + Math.max(0, g.currentBalance || 0), 0);
+    if (fromGoals > 0) return fromGoals;
 
-  const spendingCategories = useMemo(() => {
-    const categories = new Set<string>();
-    allDebitSpendingTransactions.forEach((tx) => {
-      categories.add(parseMerchantLabel(tx.merchant).category);
-    });
-    return ['all', ...Array.from(categories).sort((a, b) => a.localeCompare(b))];
-  }, [allDebitSpendingTransactions]);
+    const credits = transactionsWithDate
+      .filter((tx) => tx.type === 'credit' && Number.isFinite(tx.amount) && tx.amount > 0)
+      .reduce((sum, tx) => sum + tx.amount, 0);
+    return credits;
+  }, [savingsGoals, transactionsWithDate]);
 
-  const dateRangeFilteredTransactions = useMemo(() => {
-    if (selectedSmsDateRange === 'all') return allDebitSpendingTransactions;
+  const txCount = transactions.length;
 
-    const days = Number(selectedSmsDateRange);
-    if (!Number.isFinite(days) || days <= 0) return allDebitSpendingTransactions;
-
+  const lineData = useMemo(() => {
+    const bucket = new Map<string, number>();
     const now = new Date();
-    const minDate = new Date(now);
-    minDate.setDate(now.getDate() - days);
 
-    return allDebitSpendingTransactions.filter((tx) => {
-      const d = new Date(tx.date);
-      return !Number.isNaN(d.getTime()) && d >= minDate;
-    });
-  }, [allDebitSpendingTransactions, selectedSmsDateRange]);
-
-  const filteredSpendingTransactions = useMemo(() => {
-    if (selectedSmsCategory === 'all') return dateRangeFilteredTransactions;
-    return dateRangeFilteredTransactions.filter(
-      (tx) => parseMerchantLabel(tx.merchant).category.toLowerCase() === selectedSmsCategory.toLowerCase()
-    );
-  }, [dateRangeFilteredTransactions, selectedSmsCategory]);
-
-  const spendingByMerchant = useMemo(() => {
-    const map = new Map<string, { amount: number; lastDate: string }>();
-
-    filteredSpendingTransactions.forEach((tx) => {
-      const prev = map.get(tx.merchant);
-      if (!prev) {
-        map.set(tx.merchant, { amount: tx.amount, lastDate: tx.date });
-      } else {
-        map.set(tx.merchant, {
-          amount: prev.amount + tx.amount,
-          lastDate: new Date(tx.date).getTime() > new Date(prev.lastDate).getTime() ? tx.date : prev.lastDate,
-        });
+    if (timeRange === '30days') {
+      // Last 30 days - group by day
+      for (let i = 29; i >= 0; i--) {
+        const d = new Date(now);
+        d.setDate(now.getDate() - i);
+        bucket.set(getDayKey(d), 0);
       }
-    });
 
-    return Array.from(map.entries())
-      .map(([merchant, value]) => ({ merchant, amount: value.amount, lastDate: value.lastDate }))
-      .sort((a, b) => b.amount - a.amount || new Date(b.lastDate).getTime() - new Date(a.lastDate).getTime())
-      .slice(0, 8);
-  }, [filteredSpendingTransactions]);
+      expenseTransactions.forEach((tx) => {
+        const d = tx.parsedDate as Date;
+        const key = getDayKey(d);
+        const rangeStart = new Date(now);
+        rangeStart.setDate(now.getDate() - 29);
+        rangeStart.setHours(0, 0, 0, 0);
+        if (d >= rangeStart) {
+          if (bucket.has(key)) {
+            bucket.set(key, (bucket.get(key) || 0) + tx.amount);
+          }
+        }
+      });
 
-  const spendingByCategory = useMemo(() => {
+      return Array.from(bucket.entries()).map(([date, amount]) => ({
+        date, // Keep full YYYY-MM-DD for tooltip
+        displayDate: date.slice(5), // MM-DD for chart label
+        amount,
+      }));
+    } else if (timeRange === 'week') {
+      // Last 7 days - group by day
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(now);
+        d.setDate(now.getDate() - i);
+        bucket.set(getDayKey(d), 0);
+      }
+
+      expenseTransactions.forEach((tx) => {
+        const d = tx.parsedDate as Date;
+        const rangeStart = new Date(now);
+        rangeStart.setDate(now.getDate() - 6);
+        rangeStart.setHours(0, 0, 0, 0);
+        if (d >= rangeStart) {
+          const key = getDayKey(d);
+          if (bucket.has(key)) {
+            bucket.set(key, (bucket.get(key) || 0) + tx.amount);
+          }
+        }
+      });
+
+      return Array.from(bucket.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([date, amount]) => ({
+          date, // Keep full YYYY-MM-DD for tooltip
+          displayDate: date.slice(5), // MM-DD for chart label
+          amount,
+        }));
+    } else if (timeRange === 'month') {
+      // Current month - group by week
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+
+      for (let d = new Date(monthStart); d <= monthEnd; d.setDate(d.getDate() + 7)) {
+        const ws = getWeekStart(d);
+        const key = getDayKey(ws);
+        bucket.set(key, 0);
+      }
+
+      expenseTransactions.forEach((tx) => {
+        const d = tx.parsedDate as Date;
+        if (d >= monthStart && d <= monthEnd) {
+          const ws = getWeekStart(d);
+          const key = getDayKey(ws);
+          if (bucket.has(key)) {
+            bucket.set(key, (bucket.get(key) || 0) + tx.amount);
+          }
+        }
+      });
+
+      return Array.from(bucket.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([date, amount]) => ({
+          date, // Keep full YYYY-MM-DD for tooltip
+          displayDate: `W${date.slice(5)}`, // W-MM-DD for chart label
+          amount,
+        }));
+    } else if (timeRange === 'year') {
+      // Last 12 months - group by month
+      for (let i = 11; i >= 0; i--) {
+        const d = new Date(now);
+        d.setMonth(now.getMonth() - i, 1);
+        const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        bucket.set(monthKey, 0);
+      }
+
+      expenseTransactions.forEach((tx) => {
+        const d = tx.parsedDate as Date;
+        const rangeStart = new Date(now);
+        rangeStart.setFullYear(now.getFullYear() - 1);
+        if (d >= rangeStart) {
+          const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+          if (bucket.has(monthKey)) {
+            bucket.set(monthKey, (bucket.get(monthKey) || 0) + tx.amount);
+          }
+        }
+      });
+
+      return Array.from(bucket.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([month, amount]) => ({
+          date: month, // Keep full YYYY-MM for tooltip
+          displayDate: month.slice(5), // MM for chart label
+          amount,
+        }));
+    } else {
+      // All time - group by month
+      expenseTransactions.forEach((tx) => {
+        const d = tx.parsedDate as Date;
+        const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        bucket.set(monthKey, (bucket.get(monthKey) || 0) + tx.amount);
+      });
+
+      return Array.from(bucket.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([month, amount]) => ({
+          date: month, // Keep full YYYY-MM for tooltip
+          displayDate: month.slice(5), // MM for chart label
+          amount,
+        }));
+    }
+  }, [expenseTransactions, now, timeRange]);
+
+  const pieData = useMemo(() => {
     const map = new Map<string, number>();
-    allDebitSpendingTransactions.forEach((tx) => {
-      const { category } = parseMerchantLabel(tx.merchant);
-      map.set(category, (map.get(category) || 0) + tx.amount);
+
+    // Filter transactions based on timeRange
+    let filteredTxs = expenseTransactions;
+    if (timeRange === '30days') {
+      const rangeStart = new Date(now);
+      rangeStart.setDate(now.getDate() - 29);
+      rangeStart.setHours(0, 0, 0, 0);
+      filteredTxs = expenseTransactions.filter((tx) => (tx.parsedDate as Date) >= rangeStart);
+    } else if (timeRange === 'week') {
+      const rangeStart = new Date(now);
+      rangeStart.setDate(now.getDate() - 6);
+      rangeStart.setHours(0, 0, 0, 0);
+      filteredTxs = expenseTransactions.filter((tx) => (tx.parsedDate as Date) >= rangeStart);
+    } else if (timeRange === 'month') {
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      filteredTxs = expenseTransactions.filter((tx) => {
+        const d = tx.parsedDate as Date;
+        return d >= monthStart && d <= monthEnd;
+      });
+    } else if (timeRange === 'year') {
+      const rangeStart = new Date(now);
+      rangeStart.setFullYear(now.getFullYear() - 1);
+      filteredTxs = expenseTransactions.filter((tx) => (tx.parsedDate as Date) >= rangeStart);
+    }
+    // For 'all', use all expenseTransactions
+
+    filteredTxs.forEach((tx) => {
+      const cat = normalizeCategory(tx.category);
+      map.set(cat, (map.get(cat) || 0) + tx.amount);
     });
 
     return Array.from(map.entries())
       .map(([name, value]) => ({ name, value }))
       .sort((a, b) => b.value - a.value);
-  }, [allDebitSpendingTransactions]);
+  }, [expenseTransactions, now, timeRange]);
 
-  const totalSpending = useMemo(
-    () => filteredSpendingTransactions.reduce((sum, tx) => sum + tx.amount, 0),
-    [filteredSpendingTransactions]
+  const totalPieAmount = useMemo(
+    () => pieData.reduce((sum, item) => sum + item.value, 0),
+    [pieData]
   );
 
-  const monthlySpendingFiltered = useMemo(() => {
+  const weeklyData = useMemo(() => {
     const map = new Map<string, number>();
-    filteredSpendingTransactions.forEach((tx) => {
-      const month = (tx.date || '').slice(0, 7) || 'Unknown';
-      map.set(month, (map.get(month) || 0) + tx.amount);
+
+    for (let i = 7; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(now.getDate() - i * 7);
+      const ws = getWeekStart(d);
+      const key = getDayKey(ws);
+      map.set(key, 0);
+    }
+
+    expenseTransactions.forEach((tx) => {
+      const ws = getWeekStart(tx.parsedDate as Date);
+      const key = getDayKey(ws);
+      if (map.has(key)) {
+        map.set(key, (map.get(key) || 0) + tx.amount);
+      }
     });
 
     return Array.from(map.entries())
-      .map(([month, amount]) => ({ month, amount }))
-      .sort((a, b) => a.month.localeCompare(b.month));
-  }, [filteredSpendingTransactions]);
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([weekStart, amount]) => ({
+        week: weekStart.slice(5),
+        amount,
+      }));
+  }, [expenseTransactions, now]);
 
-  const paymentHistory = useMemo(
-    () => [...filteredSpendingTransactions].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 25),
-    [filteredSpendingTransactions]
-  );
+  const recentTransactions = useMemo(() => {
+    return [...transactionsWithDate]
+      .filter((tx) => tx.parsedDate && Number.isFinite(tx.amount))
+      .sort((a, b) => (b.parsedDate as Date).getTime() - (a.parsedDate as Date).getTime())
+      .slice(0, 10);
+  }, [transactionsWithDate]);
+
+  const savingsProgress = useMemo(() => {
+    const target = savingsGoals.reduce((sum, g) => sum + Math.max(0, g.targetAmount || 0), 0);
+    const current = savingsGoals.reduce((sum, g) => sum + Math.max(0, g.currentBalance || 0), 0);
+    const pct = target > 0 ? Math.min(100, (current / target) * 100) : 0;
+    return { target, current, pct };
+  }, [savingsGoals]);
 
   return (
     <AuthGuard>
-      <div className="min-h-screen w-full bg-background">
+      <div className='min-h-screen w-full bg-background'>
         <Navbar />
-        <main className="px-3 py-4 md:p-8 pt-16 md:pt-20 space-y-4 md:space-y-6">
+        <main className='px-3 py-4 md:p-8 pt-16 md:pt-20 space-y-4 md:space-y-6'>
           <header>
-            <h1 className="text-2xl md:text-4xl font-bold leading-tight">Financial Analytics</h1>
-            <p className="text-sm md:text-base text-muted-foreground mt-1">Track your on-chain saving momentum with clean, actionable insights.</p>
+            <h1 className='text-2xl md:text-4xl font-bold leading-tight'>Financial Analytics</h1>
+            <p className='text-sm md:text-base text-muted-foreground mt-1'>Understand your spending behavior with interactive charts.</p>
           </header>
 
           {loading ? (
             <Card>
-              <CardContent className="py-12 flex items-center justify-center gap-2 text-muted-foreground">
-                <Loader2 className="h-5 w-5 animate-spin" />
+              <CardContent className='py-12 flex items-center justify-center gap-2 text-muted-foreground'>
+                <Loader2 className='h-5 w-5 animate-spin' />
                 Loading analytics...
-              </CardContent>
-            </Card>
-          ) : goals.length === 0 ? (
-            <Card>
-              <CardContent className="py-12 text-center">
-                <p className="text-lg font-medium">No goals found yet</p>
-                <p className="text-muted-foreground mt-1">Create a goal and make a deposit to unlock analytics.</p>
               </CardContent>
             </Card>
           ) : (
             <>
-              <div className="grid grid-cols-2 md:grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4">
+              <div className='grid grid-cols-2 md:grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4'>
                 <Card>
-                  <CardHeader className="pb-1 md:pb-2 px-3 pt-3 md:px-6 md:pt-6">
-                    <CardTitle className="text-xs md:text-sm font-medium flex items-center justify-between gap-2">
+                  <CardHeader className='pb-1 md:pb-2'>
+                    <CardTitle className='text-xs md:text-sm font-medium flex items-center justify-between gap-2'>
+                      Total Balance
+                      <Wallet className='h-4 w-4 text-muted-foreground' />
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className='text-base md:text-xl font-bold'>{formatInr(balance)}</p>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className='pb-1 md:pb-2'>
+                    <CardTitle className='text-xs md:text-sm font-medium flex items-center justify-between gap-2'>
+                      Total Spent (Month)
+                      <TrendingDown className='h-4 w-4 text-muted-foreground' />
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className='text-base md:text-xl font-bold'>{formatInr(totalSpentThisMonth)}</p>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className='pb-1 md:pb-2'>
+                    <CardTitle className='text-xs md:text-sm font-medium flex items-center justify-between gap-2'>
                       Total Saved
-                      <Wallet className="h-3.5 w-3.5 md:h-4 md:w-4 text-muted-foreground" />
+                      <PiggyBank className='h-4 w-4 text-muted-foreground' />
                     </CardTitle>
                   </CardHeader>
-                  <CardContent className="px-3 pb-3 md:px-6 md:pb-6">
-                    <p className="text-base md:text-xl font-bold truncate">{formatCurrency(totalSaved)}</p>
-                    <p className="text-[10px] md:text-xs text-muted-foreground">Across {goals.length} goals</p>
+                  <CardContent>
+                    <p className='text-base md:text-xl font-bold'>{formatInr(totalSaved)}</p>
                   </CardContent>
                 </Card>
 
                 <Card>
-                  <CardHeader className="pb-1 md:pb-2 px-3 pt-3 md:px-6 md:pt-6">
-                    <CardTitle className="text-xs md:text-sm font-medium flex items-center justify-between gap-2">
-                      Goal Progress
-                      <TrendingUp className="h-3.5 w-3.5 md:h-4 md:w-4 text-muted-foreground" />
+                  <CardHeader className='pb-1 md:pb-2'>
+                    <CardTitle className='text-xs md:text-sm font-medium flex items-center justify-between gap-2'>
+                      Transactions
+                      <ReceiptText className='h-4 w-4 text-muted-foreground' />
                     </CardTitle>
                   </CardHeader>
-                  <CardContent className="px-3 pb-3 md:px-6 md:pb-6">
-                    <p className="text-base md:text-xl font-bold">{avgProgress.toFixed(1)}%</p>
-                    <p className="text-[10px] md:text-xs text-muted-foreground">Average completion</p>
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader className="pb-1 md:pb-2 px-3 pt-3 md:px-6 md:pt-6">
-                    <CardTitle className="text-xs md:text-sm font-medium flex items-center justify-between gap-2">
-                      Active Goals
-                      <Target className="h-3.5 w-3.5 md:h-4 md:w-4 text-muted-foreground" />
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="px-3 pb-3 md:px-6 md:pb-6">
-                    <p className="text-base md:text-xl font-bold">{goals.length}</p>
-                    <p className="text-[10px] md:text-xs text-muted-foreground">On-chain + local tracked</p>
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader className="pb-1 md:pb-2 px-3 pt-3 md:px-6 md:pt-6">
-                    <CardTitle className="text-xs md:text-sm font-medium flex items-center justify-between gap-2">
-                      Deposits
-                      <GitCommit className="h-3.5 w-3.5 md:h-4 md:w-4 text-muted-foreground" />
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="px-3 pb-3 md:px-6 md:pb-6">
-                    <p className="text-base md:text-xl font-bold">{totalDepositCount}</p>
-                    <p className="text-[10px] md:text-xs text-muted-foreground">Total transactions</p>
+                  <CardContent>
+                    <p className='text-base md:text-xl font-bold'>{txCount}</p>
                   </CardContent>
                 </Card>
               </div>
 
-              <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
-                <Card className="xl:col-span-3">
+              <div className='grid grid-cols-1 xl:grid-cols-5 gap-6'>
+                <Card className='xl:col-span-3'>
                   <CardHeader>
-                    <CardTitle className="text-base md:text-xl">Per-Goal Deposit Timeline</CardTitle>
-                    <CardDescription className="text-xs md:text-sm">View each deposit amount for a selected goal.</CardDescription>
-                    <div className="flex flex-col sm:flex-row sm:items-center gap-2 pt-2">
-                      <Select value={selectedGoalId} onValueChange={setSelectedGoalId}>
-                        <SelectTrigger className="w-full sm:w-[260px]">
-                          <SelectValue placeholder="Select a goal" />
+                    <div className='flex items-center justify-between gap-3'>
+                      <div>
+                        <CardTitle className='text-base md:text-xl'>Spending Trend</CardTitle>
+                        <CardDescription>
+                          {timeRange === '30days' && 'Daily spending over the last 30 days'}
+                          {timeRange === 'week' && 'Daily spending over the last 7 days'}
+                          {timeRange === 'month' && 'Weekly spending for current month'}
+                          {timeRange === 'year' && 'Monthly spending over the last 12 months'}
+                          {timeRange === 'all' && 'Monthly spending across all time'}
+                        </CardDescription>
+                      </div>
+                      <Select value={timeRange} onValueChange={(val) => setTimeRange(val as typeof timeRange)}>
+                        <SelectTrigger className='w-[140px]'>
+                          <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          {goals.map((goal) => (
-                            <SelectItem key={goal.id} value={goal.id}>
-                              {goal.name}
-                            </SelectItem>
-                          ))}
+                          <SelectItem value='30days'>Last 30 Days</SelectItem>
+                          <SelectItem value='week'>Last Week</SelectItem>
+                          <SelectItem value='month'>This Month</SelectItem>
+                          <SelectItem value='year'>Last 12 Months</SelectItem>
+                          <SelectItem value='all'>All Time</SelectItem>
                         </SelectContent>
                       </Select>
-                      {selectedGoal && (
-                        <Badge variant={selectedGoal.onChainOk ? 'default' : 'secondary'}>
-                          {selectedGoal.onChainOk ? 'On-chain synced' : 'Using local fallback'}
-                        </Badge>
-                      )}
                     </div>
                   </CardHeader>
-                  <CardContent className="h-[260px] sm:h-[300px] md:h-[340px] px-2 md:px-6">
-                    {goalDepositBars.length > 0 ? (
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={goalDepositBars} margin={{ top: 8, right: 6, left: -10, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                          <XAxis dataKey="date" tickLine={false} axisLine={false} fontSize={10} />
-                          <YAxis tickLine={false} axisLine={false} fontSize={10} width={36} />
-                          <Tooltip formatter={(value) => [formatCurrency(Number(value)), 'Deposit']} />
-                          <Bar dataKey="amount" fill="#10b981" radius={[6, 6, 0, 0]} />
-                        </BarChart>
+                  <CardContent className='h-[280px] md:h-[340px]'>
+                    {lineData.some((x) => x.amount > 0) ? (
+                      <ResponsiveContainer width='100%' height='100%'>
+                        <LineChart data={lineData} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray='3 3' vertical={false} stroke='#374151' />
+                          <XAxis 
+                            dataKey='displayDate' 
+                            tickLine={false} 
+                            axisLine={false} 
+                            fontSize={10} 
+                            interval={timeRange === '30days' ? 5 : timeRange === 'week' ? 0 : 3}
+                            tick={{ fill: '#9CA3AF' }}
+                          />
+                          <YAxis 
+                            tickLine={false} 
+                            axisLine={false} 
+                            fontSize={10} 
+                            width={42}
+                            tick={{ fill: '#9CA3AF' }}
+                          />
+                          <Tooltip content={<CustomLineTooltip />} cursor={{ stroke: '#3b82f6', strokeWidth: 2 }} />
+                          <Line 
+                            type='monotone' 
+                            dataKey='amount' 
+                            stroke='#3b82f6' 
+                            strokeWidth={2.5} 
+                            dot={{ fill: '#3b82f6', r: 3 }}
+                            activeDot={{ r: 5, fill: '#1e40af' }}
+                          />
+                        </LineChart>
                       </ResponsiveContainer>
                     ) : (
-                      <div className="h-full flex items-center justify-center text-muted-foreground">
-                        No deposits yet for this goal.
-                      </div>
+                      <div className='h-full flex items-center justify-center text-muted-foreground'>No spending data available.</div>
                     )}
                   </CardContent>
                 </Card>
 
-                <Card className="xl:col-span-2">
+                <Card className='xl:col-span-2'>
                   <CardHeader>
-                    <CardTitle className="text-base md:text-xl">Savings Distribution</CardTitle>
-                    <CardDescription className="text-xs md:text-sm">How your saved amount is spread across goals.</CardDescription>
+                    <CardTitle className='text-base md:text-xl'>Category-wise Spending</CardTitle>
+                    <CardDescription>
+                      {timeRange === '30days' && 'Distribution over last 30 days'}
+                      {timeRange === 'week' && 'Distribution over last 7 days'}
+                      {timeRange === 'month' && 'Distribution for current month'}
+                      {timeRange === 'year' && 'Distribution over last 12 months'}
+                      {timeRange === 'all' && 'Distribution across all time'}
+                    </CardDescription>
                   </CardHeader>
-                  <CardContent className="h-[260px] sm:h-[300px] md:h-[340px] px-2 md:px-6">
-                    {pieChartData.length > 0 ? (
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie data={pieChartData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={pieOuterRadius} label={!isMobile}>
-                            {pieChartData.map((_, idx) => (
-                              <Cell key={idx} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
-                            ))}
-                          </Pie>
-                          <Tooltip formatter={(value) => formatCurrency(Number(value))} />
-                        </PieChart>
+                  <CardContent className='h-[280px] md:h-[340px]'>
+                    {pieData.length > 0 ? (
+                      <div className='h-full flex flex-col'>
+                        <div className='flex-1 min-h-0'>
+                          <ResponsiveContainer width='100%' height='100%'>
+                            <PieChart>
+                              <Pie
+                                data={pieData}
+                                dataKey='value'
+                                nameKey='name'
+                                cx='50%'
+                                cy='50%'
+                                innerRadius={55}
+                                outerRadius={95}
+                                label={false}
+                                labelLine={false}
+                              >
+                                {pieData.map((_, idx) => (
+                                  <Cell key={idx} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
+                                ))}
+                              </Pie>
+                              <Tooltip content={<CustomPieTooltip />} />
+                            </PieChart>
+                          </ResponsiveContainer>
+                        </div>
+
+                        <div className='mt-3 space-y-1.5 max-h-[110px] overflow-y-auto pr-1'>
+                          {pieData.map((item, idx) => {
+                            const pct = totalPieAmount > 0 ? (item.value / totalPieAmount) * 100 : 0;
+                            return (
+                              <div key={`${item.name}-${idx}`} className='flex items-center justify-between text-xs'>
+                                <div className='flex items-center gap-2 min-w-0'>
+                                  <span
+                                    className='h-2.5 w-2.5 rounded-full shrink-0'
+                                    style={{ backgroundColor: PIE_COLORS[idx % PIE_COLORS.length] }}
+                                  />
+                                  <span className='truncate text-muted-foreground'>{item.name}</span>
+                                </div>
+                                <span className='font-medium shrink-0'>
+                                  {formatInr(item.value)} ({pct.toFixed(0)}%)
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className='h-full flex items-center justify-center text-muted-foreground'>No category data for this period.</div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+
+              <div className='grid grid-cols-1 xl:grid-cols-5 gap-6'>
+                <Card className='xl:col-span-2'>
+                  <CardHeader>
+                    <CardTitle className='text-base md:text-xl'>Weekly Spending</CardTitle>
+                    <CardDescription>Compare spending across recent weeks.</CardDescription>
+                  </CardHeader>
+                  <CardContent className='h-[250px] md:h-[300px]'>
+                    {weeklyData.some((x) => x.amount > 0) ? (
+                      <ResponsiveContainer width='100%' height='100%'>
+                        <BarChart data={weeklyData} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray='3 3' vertical={false} />
+                          <XAxis dataKey='week' tickLine={false} axisLine={false} fontSize={10} />
+                          <YAxis tickLine={false} axisLine={false} fontSize={10} width={42} />
+                          <Tooltip formatter={(value) => [formatInr(Number(value)), 'Spent']} />
+                          <Bar dataKey='amount' fill='#10b981' radius={[6, 6, 0, 0]} />
+                        </BarChart>
                       </ResponsiveContainer>
                     ) : (
-                      <div className="h-full flex items-center justify-center text-muted-foreground">
-                        No savings data to visualize yet.
+                      <div className='h-full flex items-center justify-center text-muted-foreground'>No weekly spending data yet.</div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Card className='xl:col-span-3'>
+                  <CardHeader>
+                    <CardTitle className='text-base md:text-xl'>Recent Transactions</CardTitle>
+                    <CardDescription>Latest transactions from your accounts.</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {recentTransactions.length > 0 ? (
+                      <div className='space-y-2'>
+                        {recentTransactions.slice(0, showAllTransactions ? recentTransactions.length : 3).map((tx) => {
+                          const d = tx.parsedDate as Date;
+                          return (
+                            <div key={tx.id} className='flex items-center justify-between rounded-md border p-3'>
+                              <div className='min-w-0'>
+                                <p className='font-medium truncate'>{tx.merchant || 'Unknown Merchant'}</p>
+                                <p className='text-xs text-muted-foreground'>
+                                  {normalizeCategory(tx.category)} · {d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                                </p>
+                              </div>
+                              <p className='font-semibold ml-3'>{formatInr(tx.amount)}</p>
+                            </div>
+                          );
+                        })}
+                        {recentTransactions.length > 3 && (
+                          <div className='pt-2 flex justify-center'>
+                            <button
+                              onClick={() => setShowAllTransactions(!showAllTransactions)}
+                              className='inline-flex items-center gap-2 rounded-full border border-border bg-background px-4 py-1.5 text-xs font-semibold text-foreground hover:bg-muted transition-colors'
+                            >
+                              {showAllTransactions ? 'Show Less' : 'View More'}
+                            </button>
+                          </div>
+                        )}
                       </div>
+                    ) : (
+                      <div className='py-8 text-center text-muted-foreground'>No transactions found.</div>
                     )}
                   </CardContent>
                 </Card>
@@ -506,178 +778,23 @@ function AnalyticsPage() {
 
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-base md:text-xl">Monthly Deposit Trend</CardTitle>
-                  <CardDescription className="text-xs md:text-sm">Last 6 months based on your recorded deposit dates.</CardDescription>
+                  <CardTitle className='text-base md:text-xl'>Savings Progress</CardTitle>
+                  <CardDescription>Progress toward your savings goals.</CardDescription>
                 </CardHeader>
-                <CardContent className="h-[230px] sm:h-[260px] md:h-[280px] px-2 md:px-6">
-                  {monthlySavingsData.length > 0 ? (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={monthlySavingsData} margin={{ top: 8, right: 6, left: -10, bottom: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                        <XAxis dataKey="month" tickLine={false} axisLine={false} fontSize={10} />
-                        <YAxis tickLine={false} axisLine={false} fontSize={10} width={36} />
-                        <Tooltip formatter={(value) => [formatCurrency(Number(value)), 'Saved']} />
-                        <Bar dataKey="amount" fill="#3b82f6" radius={[6, 6, 0, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
+                <CardContent className='space-y-3'>
+                  {savingsGoals.length > 0 ? (
+                    <>
+                      <div className='flex items-center justify-between text-sm'>
+                        <span>{formatInr(savingsProgress.current)} / {formatInr(savingsProgress.target)}</span>
+                        <span>{savingsProgress.pct.toFixed(1)}%</span>
+                      </div>
+                      <Progress value={savingsProgress.pct} />
+                    </>
                   ) : (
-                    <div className="h-full flex items-center justify-center text-muted-foreground">
-                      Not enough history to plot monthly trend.
-                    </div>
+                    <p className='text-sm text-muted-foreground'>No savings goals found. Create a goal to track progress here.</p>
                   )}
                 </CardContent>
               </Card>
-
-              <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
-                <Card className="xl:col-span-3">
-                  <CardHeader>
-                    <CardTitle className="text-base md:text-xl">Spending Insights</CardTitle>
-                    <CardDescription className="text-xs md:text-sm">Includes saved SMS spends and savings goal deposits.</CardDescription>
-                    <div className="pt-2 flex flex-col sm:flex-row gap-2">
-                      <Select value={selectedSmsCategory} onValueChange={setSelectedSmsCategory}>
-                        <SelectTrigger className="w-full sm:w-[220px]">
-                          <SelectValue placeholder="Filter by category" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {spendingCategories.map((cat) => (
-                            <SelectItem key={cat} value={cat}>
-                              {cat === 'all' ? 'All Categories' : cat}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-
-                      <Select value={selectedSmsDateRange} onValueChange={setSelectedSmsDateRange}>
-                        <SelectTrigger className="w-full sm:w-[200px]">
-                          <SelectValue placeholder="Filter by date" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="all">All Time</SelectItem>
-                          <SelectItem value="7">Last 7 Days</SelectItem>
-                          <SelectItem value="30">Last 30 Days</SelectItem>
-                          <SelectItem value="90">Last 90 Days</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    {spendingByMerchant.length > 0 ? (
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between rounded-md border p-3">
-                          <span className="text-sm text-muted-foreground">
-                            Total Spend ({selectedSmsCategory === 'all' ? 'All' : selectedSmsCategory}, {selectedSmsDateRange === 'all' ? 'All Time' : `Last ${selectedSmsDateRange} Days`})
-                          </span>
-                          <span className="font-semibold">{formatInr(totalSpending)}</span>
-                        </div>
-                        {spendingByMerchant.map((item, idx) => {
-                          const { brand, category } = parseMerchantLabel(item.merchant);
-                          return (
-                            <div key={`${item.merchant}-${idx}`} className="flex items-center justify-between rounded-md border p-3">
-                              <div className="min-w-0">
-                                <p className="font-medium truncate">{brand} ({category})</p>
-                                <p className="text-xs text-muted-foreground">Last payment: {formatDisplayDate(item.lastDate)}</p>
-                              </div>
-                              <p className="font-semibold ml-3">{formatInr(item.amount)}</p>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <div className="py-8 text-center text-muted-foreground">
-                        Save SMS parsed transactions or deposit into savings goals to view spending insights.
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-
-                <Card className="xl:col-span-2">
-                  <CardHeader>
-                    <CardTitle className="text-base md:text-xl">Spending by Category</CardTitle>
-                    <CardDescription className="text-xs md:text-sm">Category split from merchant labels.</CardDescription>
-                  </CardHeader>
-                  <CardContent className="h-[260px] sm:h-[300px] md:h-[320px] px-2 md:px-6">
-                    {spendingByCategory.length > 0 ? (
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie
-                            data={spendingByCategory}
-                            dataKey="value"
-                            nameKey="name"
-                            cx="50%"
-                            cy="50%"
-                            outerRadius={pieOuterRadius}
-                            label={!isMobile}
-                          >
-                            {spendingByCategory.map((_, idx) => (
-                              <Cell key={idx} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
-                            ))}
-                          </Pie>
-                          <Tooltip formatter={(value) => formatInr(Number(value))} />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    ) : (
-                      <div className="h-full flex items-center justify-center text-muted-foreground">
-                        No spending data yet.
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              </div>
-
-              <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
-                <Card className="xl:col-span-2">
-                  <CardHeader>
-                    <CardTitle className="text-base md:text-xl">Filtered Spend Graph (INR)</CardTitle>
-                    <CardDescription className="text-xs md:text-sm">Monthly spending for selected category/date filter.</CardDescription>
-                  </CardHeader>
-                  <CardContent className="h-[250px] md:h-[290px] px-2 md:px-6">
-                    {monthlySpendingFiltered.length > 0 ? (
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={monthlySpendingFiltered} margin={{ top: 8, right: 6, left: -10, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                          <XAxis dataKey="month" tickLine={false} axisLine={false} fontSize={10} />
-                          <YAxis tickLine={false} axisLine={false} fontSize={10} width={40} />
-                          <Tooltip formatter={(value) => [formatInr(Number(value)), 'Spent']} />
-                          <Bar dataKey="amount" fill="#ef4444" radius={[6, 6, 0, 0]} />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    ) : (
-                      <div className="h-full flex items-center justify-center text-muted-foreground">
-                        No graph data for selected filter.
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-
-                <Card className="xl:col-span-3">
-                  <CardHeader>
-                    <CardTitle className="text-base md:text-xl">Payment History</CardTitle>
-                    <CardDescription className="text-xs md:text-sm">Latest debit transactions for selected filter.</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    {paymentHistory.length > 0 ? (
-                      <div className="space-y-2">
-                        {paymentHistory.map((tx) => {
-                          const { brand, category } = parseMerchantLabel(tx.merchant);
-                          return (
-                            <div key={tx.id} className="flex items-center justify-between rounded-md border p-3">
-                              <div className="min-w-0">
-                                <p className="font-medium truncate">{brand} ({category})</p>
-                                <p className="text-xs text-muted-foreground">
-                                  Done on {formatDisplayDate(tx.date)} · {tx.source === 'saving-goal' ? 'Savings Goal Deposit' : 'SMS'}
-                                </p>
-                              </div>
-                              <p className="font-semibold ml-3 text-red-500">{formatInr(tx.amount)}</p>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <div className="py-8 text-center text-muted-foreground">No payment history for selected filter.</div>
-                    )}
-                  </CardContent>
-                </Card>
-              </div>
             </>
           )}
         </main>

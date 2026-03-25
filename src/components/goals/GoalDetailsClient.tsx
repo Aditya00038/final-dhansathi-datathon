@@ -6,7 +6,7 @@ import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { formatCurrency, formatDateFromTimestamp, microAlgosToAlgos, toDate } from '@/lib/utils';
-import { Calendar, Target, PiggyBank, Award, CheckCircle2, History, Milestone, Wallet, AlertTriangle, ExternalLink, HeartPulse, Lock, ShieldAlert, Sparkles } from 'lucide-react';
+import { Calendar, Target, PiggyBank, CheckCircle2, History, Milestone, Wallet, AlertTriangle, ExternalLink, HeartPulse, Lock, ShieldAlert, Sparkles } from 'lucide-react';
 import { DepositDialog } from './DepositDialog';
 import { SavingsChart } from './SavingsChart';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -26,7 +26,6 @@ import { calculateFinancialHealth } from '@/lib/financial-health';
 import { FinancialHealthIndicator } from './FinancialHealthIndicator';
 import { getGoalByIdFirestore, saveNFT, getNFTByGoalId } from '@/lib/local-store';
 import GoalAdviceAgent from './GoalAdviceAgent';
-import { calculateAchievements, getTierBadgeStyle, type Achievement } from '@/lib/achievements';
 import { useBankBalance } from '@/hooks/useBankBalance';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -209,10 +208,6 @@ export default function GoalDetailsClient({ goal: initialGoal }: GoalDetailsClie
       const dateB = toDate(b.timestamp).getTime();
       return dateB - dateA;
   }) : [];
-  
-  const achievementProgress = calculateAchievements(goal.deposits || [], onChainGoal);
-  const unlockedAchievements = achievementProgress.achievements.filter(a => a.unlocked);
-  const lockedAchievements = achievementProgress.achievements.filter(a => !a.unlocked);
 
   const canWithdraw = onChainGoal.goalCompleted || (onChainGoal.deadline > 0 && Date.now() / 1000 > onChainGoal.deadline);
 
@@ -455,71 +450,6 @@ export default function GoalDetailsClient({ goal: initialGoal }: GoalDetailsClie
                 <ul className="space-y-2 text-sm text-muted-foreground list-disc list-inside">
                     {healthFeedback.map((item, i) => <li key={i}>{item}</li>)}
                 </ul>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center justify-between">
-                <span className="flex items-center"><Award className="mr-2" /> Achievements</span>
-                <span className="text-sm font-normal text-muted-foreground">
-                  {achievementProgress.totalUnlocked}/{achievementProgress.totalPossible}
-                </span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {/* Unlocked achievements */}
-              {unlockedAchievements.length > 0 ? (
-                <div className="space-y-2">
-                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Unlocked</p>
-                  <div className="flex flex-wrap gap-2">
-                    {unlockedAchievements.map((ach) => (
-                      <div
-                        key={ach.id}
-                        className={`flex items-center gap-2 px-3 py-2 rounded-lg border-2 ${ach.bgColor} ${getTierBadgeStyle(ach.tier)}`}
-                        title={ach.description}
-                      >
-                        <span className="text-lg">{ach.icon}</span>
-                        <span className={`text-sm font-medium ${ach.color}`}>{ach.name}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <p className="text-center text-sm text-muted-foreground py-2">No achievements unlocked yet. Start saving!</p>
-              )}
-              
-              {/* Next milestone */}
-              {achievementProgress.nextMilestone && (
-                <div className="mt-3 p-3 rounded-lg bg-secondary/50 border border-dashed border-border">
-                  <p className="text-xs text-muted-foreground">
-                    <span className="font-medium">Next:</span> {achievementProgress.nextMilestone}
-                  </p>
-                </div>
-              )}
-              
-              {/* Locked achievements preview */}
-              {lockedAchievements.length > 0 && (
-                <div className="space-y-2 mt-4">
-                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Locked ({lockedAchievements.length})</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {lockedAchievements.slice(0, 6).map((ach) => (
-                      <div
-                        key={ach.id}
-                        className="flex items-center gap-1.5 px-2 py-1.5 rounded-md bg-muted/50 border border-border opacity-50"
-                        title={`${ach.name}: ${ach.description}`}
-                      >
-                        <span className="text-sm grayscale">{ach.icon}</span>
-                        <span className="text-xs text-muted-foreground">{ach.name}</span>
-                      </div>
-                    ))}
-                    {lockedAchievements.length > 6 && (
-                      <div className="flex items-center px-2 py-1.5 rounded-md bg-muted/30 text-xs text-muted-foreground">
-                        +{lockedAchievements.length - 6} more
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
             </CardContent>
           </Card>
 

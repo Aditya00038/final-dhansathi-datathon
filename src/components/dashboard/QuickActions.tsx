@@ -6,7 +6,7 @@ const actions = [
   { href: "/savings/new", label: "Savings Goal", icon: PiggyBank, accent: "text-emerald-600 bg-emerald-500/10" },
   { href: "/goals/new", label: "On-Chain Goal", icon: Shield, accent: "text-blue-600 bg-blue-500/10" },
   { href: "/analytics", label: "Analytics", icon: BarChart3, accent: "text-amber-600 bg-amber-500/10" },
-  { href: "/sms-parser", label: "SMS Paste", icon: ClipboardPaste, accent: "text-rose-600 bg-rose-500/10" },
+  { href: "/sms-parser", label: "Transaction Parser", icon: ClipboardPaste, accent: "text-rose-600 bg-rose-500/10" },
   { href: "/schemes", label: "Govt Schemes", icon: Landmark, accent: "text-violet-600 bg-violet-500/10" },
 ];
 

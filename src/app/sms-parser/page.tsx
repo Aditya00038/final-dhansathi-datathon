@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, Suspense } from 'react';
+import { useState, Suspense, useEffect } from 'react';
 import Navbar from '@/components/layout/Navbar';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -13,10 +13,12 @@ import type { AIParsedTransaction } from '@/lib/types'; // Using the official ty
 import { parseSmsAction } from './actions';
 import { useBankBalance } from '@/hooks/useBankBalance';
 import { useAuth } from '@/contexts/AuthContext';
-import { saveSmsParsedTransactions } from '@/lib/local-store';
+import { getSavedSmsTransactions, saveCashSpenderTransaction, saveSmsParsedTransactions } from '@/lib/local-store';
 import Link from 'next/link';
+import { db } from '@/lib/firebase';
+import { doc, getDoc } from 'firebase/firestore';
 
-const CATEGORY_OPTIONS = ['Food', 'Shopping', 'Travel', 'Bills', 'Payments', 'Person Transfer', 'Income', 'Subscription', 'Competition/Hackathon', 'Charges', 'Cash', 'Others'];
+const CATEGORY_OPTIONS = ['Food', 'Shopping', 'Travel', 'Bills', 'Payments', 'Person Transfer', 'Income', 'Subscription', 'Competition/Hackathon', 'Charges', 'Others'];
 
 function parseMerchantLabel(label?: string): { brand: string; category: string } {
   if (!label) return { brand: '', category: 'Others' };
@@ -49,6 +51,44 @@ export default function SmsParserPage() {
   const { bankAccount, updateBalance } = useBankBalance();
   const { user } = useAuth();
   const { toast } = useToast();
+  const [cashAmount, setCashAmount] = useState('');
+  const [cashDate, setCashDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [cashMerchant, setCashMerchant] = useState('Cash Expense');
+  const [cashCategory, setCashCategory] = useState('Others');
+  const [isCashSaving, setIsCashSaving] = useState(false);
+  const [isSendingTestSms, setIsSendingTestSms] = useState(false);
+  const [userPhone, setUserPhone] = useState('');
+  const [cashEntries, setCashEntries] = useState<AIParsedTransaction[]>([]);
+
+  useEffect(() => {
+    if (!user?.uid) return;
+
+    const all = getSavedSmsTransactions(user.uid);
+    const cashOnly = all
+      .filter((tx) => tx.source === 'cash-manual')
+      .slice(0, 5)
+      .map((tx) => ({
+        amount: tx.amount,
+        date: tx.date,
+        merchant: tx.merchant,
+        type: tx.type,
+      }));
+    setCashEntries(cashOnly);
+
+    const loadPhone = async () => {
+      try {
+        const snap = await getDoc(doc(db, 'users', user.uid));
+        if (snap.exists()) {
+          const phone = typeof snap.data().phoneNumber === 'string' ? snap.data().phoneNumber : '';
+          setUserPhone(phone || '');
+        }
+      } catch {
+        // Ignore silently; user can still use the feature.
+      }
+    };
+
+    loadPhone();
+  }, [user?.uid]);
 
   const updateTransaction = (index: number, updater: (tx: AIParsedTransaction) => AIParsedTransaction) => {
     setParsedTransactions((prev) => prev.map((tx, i) => (i === index ? updater(tx) : tx)));
@@ -126,6 +166,95 @@ export default function SmsParserPage() {
     }
   };
 
+  const handleAddCashSpend = async () => {
+    if (!user) {
+      toast({ title: 'Login Required', description: 'Please log in before adding cash spend.', variant: 'destructive' });
+      return;
+    }
+
+    if (!bankAccount) {
+      toast({
+        title: 'Connect Bank First',
+        description: 'You must connect a bank account before adding cash spend.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const amt = Number(cashAmount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      toast({ title: 'Invalid Amount', description: 'Enter a valid cash amount.', variant: 'destructive' });
+      return;
+    }
+
+    setIsCashSaving(true);
+    try {
+      const saved = saveCashSpenderTransaction(user.uid, {
+        amount: amt,
+        date: cashDate,
+        merchant: cashMerchant,
+        category: cashCategory,
+        type: 'debit',
+      });
+
+      if (!saved) {
+        toast({ title: 'Save Failed', description: 'Could not save cash spend.', variant: 'destructive' });
+        return;
+      }
+
+      const all = getSavedSmsTransactions(user.uid)
+        .filter((tx) => tx.source === 'cash-manual')
+        .slice(0, 5)
+        .map((tx) => ({
+          amount: tx.amount,
+          date: tx.date,
+          merchant: tx.merchant,
+          type: tx.type,
+        }));
+      setCashEntries(all);
+
+      setCashAmount('');
+      setCashMerchant('Cash Expense');
+      setCashCategory('Others');
+      setCashDate(new Date().toISOString().slice(0, 10));
+      toast({ title: 'Cash Spend Added', description: 'Your cash transaction has been saved.' });
+    } catch (e: any) {
+      toast({ title: 'Save Failed', description: e?.message || 'Could not save cash spend.', variant: 'destructive' });
+    } finally {
+      setIsCashSaving(false);
+    }
+  };
+
+  const handleSendTestCashReminder = async () => {
+    if (!userPhone.trim()) {
+      toast({ title: 'Phone Number Missing', description: 'Add your phone number in profile to receive SMS.', variant: 'destructive' });
+      return;
+    }
+
+    setIsSendingTestSms(true);
+    try {
+      const response = await fetch('/api/send-sms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recipient: userPhone,
+          message: 'DhanSathi 11PM check-in: Did you spend cash today? Please add it in Cash Spender so your analytics stay accurate.',
+        }),
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || 'Unable to send test SMS');
+      }
+
+      toast({ title: 'Test SMS Sent', description: 'Cash reminder SMS was sent for checking.' });
+    } catch (e: any) {
+      toast({ title: 'SMS Failed', description: e?.message || 'Unable to send test SMS.', variant: 'destructive' });
+    } finally {
+      setIsSendingTestSms(false);
+    }
+  };
+
   return (
     <div className='min-h-screen bg-background pb-20 md:pb-0'>
       <Navbar />
@@ -147,7 +276,75 @@ export default function SmsParserPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>SMS Paste Transaction Detection</CardTitle>
+            <CardTitle>Cash Spender</CardTitle>
+            <CardDescription>Add money you spent in cash so your reports and goal guidance stay accurate.</CardDescription>
+          </CardHeader>
+          <CardContent className='space-y-4'>
+            <div className='grid grid-cols-1 md:grid-cols-2 gap-3'>
+              <div>
+                <label className='text-sm font-medium'>Amount (₹)</label>
+                <Input
+                  type='number'
+                  min='0'
+                  step='0.01'
+                  value={cashAmount}
+                  onChange={(e) => setCashAmount(e.target.value)}
+                  placeholder='e.g. 250'
+                />
+              </div>
+              <div>
+                <label className='text-sm font-medium'>Date</label>
+                <Input type='date' value={cashDate} onChange={(e) => setCashDate(e.target.value)} />
+              </div>
+              <div>
+                <label className='text-sm font-medium'>Where/Note</label>
+                <Input
+                  value={cashMerchant}
+                  onChange={(e) => setCashMerchant(e.target.value)}
+                  placeholder='e.g. Local market'
+                />
+              </div>
+              <div>
+                <label className='text-sm font-medium'>Category</label>
+                <Select value={cashCategory} onValueChange={setCashCategory}>
+                  <SelectTrigger>
+                    <SelectValue placeholder='Category' />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CATEGORY_OPTIONS.map((category) => (
+                      <SelectItem key={category} value={category}>{category}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className='flex flex-col sm:flex-row gap-2'>
+              <Button onClick={handleAddCashSpend} disabled={isCashSaving || !bankAccount}>
+                {isCashSaving ? 'Saving...' : 'Add Cash Spend'}
+              </Button>
+              <Button variant='outline' onClick={handleSendTestCashReminder} disabled={isSendingTestSms}>
+                {isSendingTestSms ? 'Sending SMS...' : 'Send Test 11PM SMS'}
+              </Button>
+            </div>
+
+            {cashEntries.length > 0 && (
+              <div className='rounded-md border p-3 space-y-2'>
+                <p className='text-sm font-medium'>Recent Cash Entries</p>
+                {cashEntries.map((entry, idx) => (
+                  <div key={`${entry.date || ''}-${entry.amount || 0}-${idx}`} className='text-sm text-muted-foreground flex items-center justify-between'>
+                    <span>{entry.date} • {entry.merchant || 'Cash Expense'}</span>
+                    <span className='font-medium text-foreground'>₹{Number(entry.amount || 0).toLocaleString('en-IN')}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Transaction Parser</CardTitle>
             <CardDescription>Paste one or multiple bank SMS messages below to automatically extract transaction details.</CardDescription>
           </CardHeader>
           <CardContent>
@@ -159,9 +356,14 @@ export default function SmsParserPage() {
             />
           </CardContent>
           <CardFooter>
-            <Button onClick={handleParse} disabled={isLoading}>
-              {isLoading ? 'Parsing...' : 'Parse Transactions'}
-            </Button>
+            <div className='flex flex-col sm:flex-row gap-2'>
+              <Button onClick={handleParse} disabled={isLoading}>
+                {isLoading ? 'Parsing...' : 'Parse Transactions'}
+              </Button>
+              <Button variant='outline' asChild>
+                <Link href='/scan'>Scan Receipt (OCR + AI)</Link>
+              </Button>
+            </div>
           </CardFooter>
         </Card>
 

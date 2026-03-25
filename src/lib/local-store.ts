@@ -11,6 +11,8 @@ import {
   setDoc,
   updateDoc,
   arrayUnion,
+  addDoc,
+  serverTimestamp,
 } from "firebase/firestore";
 
 const GOALS_KEY_PREFIX = "algosave_goals_";
@@ -300,5 +302,98 @@ export function saveSmsParsedTransactions(userId: string, transactions: AIParsed
     new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
   );
   localStorage.setItem(getSmsTransactionsKey(userId), JSON.stringify(merged));
+
+  // Also save to Firestore so analytics charts can use this data
+  if (normalized.length > 0) {
+    try {
+      normalized.forEach((tx) => {
+        // Extract category from merchant if it has format "name (category)"
+        let category = 'Others';
+        const categoryMatch = tx.merchant.match(/\(([^)]+)\)$/);
+        if (categoryMatch && categoryMatch[1]) {
+          const potential = categoryMatch[1].trim();
+          const validCategories = ['Food', 'Shopping', 'Travel', 'Bills', 'Others'];
+          if (validCategories.includes(potential)) {
+            category = potential;
+          }
+        }
+
+        addDoc(collection(db, 'transactions'), {
+          userId: tx.userId,
+          amount: tx.amount,
+          merchant: tx.merchant,
+          category,
+          type: tx.type,
+          date: tx.date,
+          source: 'SMS',
+          createdAt: serverTimestamp(),
+        }).catch(() => {
+          // Silently fail; data is still saved in localStorage
+        });
+      });
+    } catch {
+      // Silently fail; data is still saved in localStorage
+    }
+  }
+
   return normalized;
+}
+
+export function saveCashSpenderTransaction(
+  userId: string,
+  payload: {
+    amount: number;
+    date: string;
+    merchant: string;
+    category?: string;
+    type?: "debit" | "credit";
+  }
+): SavedSmsTransaction | null {
+  if (typeof window === "undefined") return null;
+
+  const amount = Number(payload.amount);
+  const date = (payload.date || "").trim();
+  const merchant = (payload.merchant || "").trim();
+  const type = payload.type === "credit" ? "credit" : "debit";
+  const category = (payload.category || "Others").trim() || "Others";
+
+  if (!Number.isFinite(amount) || amount <= 0 || !date || !merchant) {
+    return null;
+  }
+
+  const entry: SavedSmsTransaction = {
+    id: `cash_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    userId,
+    amount,
+    date,
+    merchant: `${merchant} (${category})`,
+    type,
+    source: "cash-manual",
+    createdAt: new Date().toISOString(),
+  };
+
+  const existing = getSavedSmsTransactions(userId);
+  const merged = [entry, ...existing].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
+  localStorage.setItem(getSmsTransactionsKey(userId), JSON.stringify(merged));
+
+  try {
+    addDoc(collection(db, "transactions"), {
+      userId,
+      amount: entry.amount,
+      merchant: merchant,
+      category,
+      type: entry.type,
+      date: entry.date,
+      source: "CASH",
+      createdAt: serverTimestamp(),
+    }).catch(() => {
+      // Keep local copy even if remote write fails.
+    });
+  } catch {
+    // Keep local copy even if remote write fails.
+  }
+
+  return entry;
 }

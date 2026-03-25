@@ -172,6 +172,18 @@ body {
 .goog-logo-link {
   display: none !important;
 }
+.goog-te-gadget-icon {
+  display: none !important;
+}
+.goog-te-gadget-simple .VIpgJd-ZVi9od-l4eHX-hSRGPd,
+.google-translate-floating .VIpgJd-ZVi9od-l4eHX-hSRGPd,
+.google-translate-widget .VIpgJd-ZVi9od-l4eHX-hSRGPd {
+  display: none !important;
+}
+.goog-te-gadget-simple {
+  background: transparent !important;
+  border: 0 !important;
+}
 /* Hide notification popups */
 .goog-te-balloon-frame {
   display: none !important;

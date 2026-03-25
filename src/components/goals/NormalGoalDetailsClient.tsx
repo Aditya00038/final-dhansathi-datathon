@@ -84,14 +84,27 @@ export default function NormalGoalDetailsClient({ goal, onGoalUpdate }: NormalGo
       return;
     }
     const result = await withdrawFromNormalGoalFirestore(user.uid, goal.id, amt, withdrawNote || undefined);
-    if (result) {
+    if (!result) {
+      toast({ variant: 'destructive', title: 'Withdraw Failed', description: 'Unable to withdraw from this goal right now.' });
+      return;
+    }
+
+    // Refresh goal UI immediately; bank sync should not block progress updates.
+    onGoalUpdate();
+
+    try {
       await updateBalance(amt);
       toast({ title: 'Withdrawn', description: `₹${amt.toLocaleString('en-IN')} withdrawn from \'${goal.name}\'.` });
-      setWithdrawAmount('');
-      setWithdrawNote('');
-      setIsWithdrawOpen(false);
-      onGoalUpdate();
+    } catch {
+      toast({
+        title: 'Withdrawn',
+        description: `₹${amt.toLocaleString('en-IN')} withdrawn from \'${goal.name}\'. Bank balance sync failed; retry after reconnect.`,
+      });
     }
+
+    setWithdrawAmount('');
+    setWithdrawNote('');
+    setIsWithdrawOpen(false);
   };
 
   const handleSaveFinancials = async () => {

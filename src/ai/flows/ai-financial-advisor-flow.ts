@@ -2,16 +2,73 @@
 
 import { ai, isAIConfigured } from '../genkit';
 
+let aiCooldownUntil = 0;
+
+function extractRetryMsFromError(error: unknown): number {
+  const msg = String((error as any)?.message || error || '');
+  const secondsMatch = msg.match(/Please retry in\s+([\d.]+)s/i);
+  if (secondsMatch) {
+    const seconds = Number(secondsMatch[1]);
+    if (!Number.isNaN(seconds) && seconds > 0) return Math.ceil(seconds * 1000);
+  }
+  return 60_000;
+}
+
+function isQuotaOrRateLimitError(error: unknown): boolean {
+  const msg = String((error as any)?.message || error || '').toLowerCase();
+  return msg.includes('429') || msg.includes('too many requests') || msg.includes('quota exceeded') || msg.includes('rate limit');
+}
+
 interface FinancialAdviceInput {
   userMessage: string;
   context?: {
     totalSaved?: number;
     totalTarget?: number;
+    totalSavedInr?: number;
+    totalTargetInr?: number;
     activeGoals?: number;
     completedGoals?: number;
     recentDeposits?: { amount: number; date: string }[];
+    goals?: Array<{
+      name: string;
+      type: "on-chain" | "off-chain";
+      targetAmount: number;
+      currentSaved: number;
+      deadline: string;
+      currency: "ALGO" | "INR";
+      goalCompleted: boolean;
+      transactions?: Array<{
+        type: "deposit" | "withdrawal";
+        amount: number;
+        timestamp: string;
+      }>;
+    }>;
+    todaySpending?: Array<{
+      amount: number;
+      merchant: string;
+      category: string;
+    }>;
+    todayTotal?: number;
   };
   conversationHistory?: { role: 'user' | 'assistant'; content: string }[];
+}
+
+function compactResponse(text: string): string {
+  const cleaned = text.replace(/\n{3,}/g, '\n\n').trim();
+  if (cleaned.length <= 700) return cleaned;
+
+  const sliced = cleaned.slice(0, 700);
+  const lastSentence = Math.max(
+    sliced.lastIndexOf('. '),
+    sliced.lastIndexOf('! '),
+    sliced.lastIndexOf('? ')
+  );
+
+  if (lastSentence > 240) {
+    return `${sliced.slice(0, lastSentence + 1).trim()}\n\nIf you want, I can expand this in detail.`;
+  }
+
+  return `${sliced.trim()}...\n\nIf you want, I can expand this in detail.`;
 }
 
 // ─── Smart Intent Detection ───
@@ -20,10 +77,28 @@ type Intent =
   | 'set_goal' | 'motivation' | 'student_finance' | 'investment'
   | 'emergency_fund' | 'debt' | 'expense_tracking' | 'income_boost'
   | 'habit_building' | 'app_help' | 'multiple_goals' | 'progress_check'
-  | 'general';
+  | 'goal_specific' | 'daily_spending_check' | 'general';
 
-function detectIntent(message: string): Intent {
+function detectIntent(message: string, context?: FinancialAdviceInput['context']): Intent {
   const m = message.toLowerCase();
+
+  // Follow-up questions like "when i deposit 600 date" should stay goal-aware
+  if (/\b(when|date)\b.*\b(deposit|deposited|saved|add|added|put)\b|\b(deposit|deposited|saved|add|added|put)\b.*\b(when|date)\b/i.test(m))
+    return 'goal_specific';
+  
+  // Check for daily spending questions
+  if (/today.*spend|did.*spend.*today|how.*much.*spend|today.*expense|spent.*today|today.*money/i.test(m))
+    return 'daily_spending_check';
+  
+  // Check if mentioning a specific goal by name
+  if (context?.goals && context.goals.length > 0) {
+    for (const goal of context.goals) {
+      if (m.includes(goal.name.toLowerCase()) || m.includes(goal.name.toLowerCase().split(' ')[0])) {
+        return 'goal_specific';
+      }
+    }
+  }
+  
   // Greetings
   if (/^(hi|hello|hey|namaste|hii+|sup|yo|good\s*(morning|evening|afternoon)|help me|i need help|i want.*help)/i.test(m))
     return 'greeting';
@@ -65,20 +140,147 @@ function generateSmartResponse(message: string, context?: FinancialAdviceInput['
   response: string;
   suggestions: string[];
 } {
-  const intent = detectIntent(message);
+  const intent = detectIntent(message, context);
 
   const saved = context?.totalSaved ?? 0;
   const target = context?.totalTarget ?? 0;
+  const savedInr = context?.totalSavedInr ?? 0;
+  const targetInr = context?.totalTargetInr ?? 0;
   const active = context?.activeGoals ?? 0;
   const completed = context?.completedGoals ?? 0;
   const progress = target > 0 ? ((saved / target) * 100).toFixed(1) : '0';
-  const hasContext = context && (saved > 0 || target > 0 || active > 0);
+  const hasContext = context && (saved > 0 || target > 0 || savedInr > 0 || targetInr > 0 || active > 0);
 
   const contextLine = hasContext
-    ? `\n\n📊 Your Stats: ${saved.toFixed(2)} ALGO saved of ${target.toFixed(2)} ALGO target (${progress}%) • ${active} active goal${active !== 1 ? 's' : ''} • ${completed} completed`
+    ? `\n\n📊 Your Stats: ${saved.toFixed(2)} ALGO saved (${progress}%) • ₹${savedInr.toLocaleString('en-IN')} in Savings Goals • ${active} active goal${active !== 1 ? 's' : ''} • ${completed} completed`
     : '';
 
+  // Helper function to find matching goal
+  function findGoal(message: string) {
+    if (!context?.goals || context.goals.length === 0) return null;
+    const lower = message.toLowerCase();
+    const byName = context.goals.find(g => lower.includes(g.name.toLowerCase()) || lower.includes(g.name.toLowerCase().split(' ')[0]));
+    if (byName) return byName;
+
+    // Try matching by asked amount (e.g. "when i deposit 600?")
+    const amountMatch = lower.match(/(?:₹|rs\.?\s*)?\s*(\d{2,}(?:,\d{3})*(?:\.\d+)?)/);
+    const askedAmount = amountMatch ? Number(amountMatch[1].replace(/,/g, '')) : NaN;
+    if (!Number.isNaN(askedAmount)) {
+      const byAmount = context.goals.find((g) =>
+        (g.transactions || []).some((tx) => tx.type === 'deposit' && Math.abs(tx.amount - askedAmount) < 0.01)
+      );
+      if (byAmount) return byAmount;
+    }
+
+    // If only one goal exists, assume follow-up refers to that goal
+    if (context.goals.length === 1) return context.goals[0];
+    return null;
+  }
+
   switch (intent) {
+    case 'daily_spending_check':
+      if (context?.todaySpending && context.todaySpending.length > 0) {
+        const transactions = context.todaySpending
+          .map(t => `• ${t.merchant} — ₹${t.amount.toLocaleString('en-IN')} (${t.category})`)
+          .join('\n');
+        return {
+          response: `**Today's Spending** 💸\n\n**Total: ₹${(context.todayTotal || 0).toLocaleString('en-IN')}**\n\n${transactions}\n\n**Tips:**\nYou've spent ₹${(context.todayTotal || 0).toLocaleString('en-IN')} so far today. If this is higher than usual, consider:\n• Avoiding food delivery tomorrow\n• Using public transport instead of cabs\n• Cutting one discretionary purchase\n\nEvery rupee saved → deposit to **GTA VI goal** (currently 12% complete, ₹4,400 remaining!)`,
+          suggestions: ['Show me weekly spending', 'How to reduce spending?', 'View Analytics', 'Track cash spending'],
+        };
+      } else {
+        return {
+          response: `**Today's Spending** 💸\n\n✅ **Great! No spending tracked yet today**\n\nYou haven't logged any expenses yet. Ways to track:\n\n1. **Bank SMS:** Go to **SMS Parser** → paste your bank alert SMS\n2. **Cash spending:** Use **Cash Spender** tool in SMS Parser\n3. **See all:** Go to **Analytics** page for complete view\n\nKeeping today zero or low helps your **GTA VI goal**! 🎯`,
+          suggestions: ['Track with SMS', 'Add cash spending', 'View Analytics', 'How to save more?'],
+        };
+      }
+
+    case 'goal_specific':
+      const goal = findGoal(message);
+      if (goal) {
+        const isDepositQuestion = /\b(did|have|has|am|i)\b.*\b(deposit|deposited|saved|add|added|put)\b|\bdeposit\b.*\b(goal|money|for)\b/i.test(message.toLowerCase());
+        const isDateQuestion = /\bwhen\b|\bdate\b|\bwhich\s+day\b/i.test(message.toLowerCase());
+        const goalProgress = goal.targetAmount > 0 
+          ? ((goal.currentSaved / goal.targetAmount) * 100).toFixed(1)
+          : '0';
+        const remaining = Math.max(0, goal.targetAmount - goal.currentSaved);
+        const deadlineDate = new Date(goal.deadline);
+        const today = new Date();
+        const daysLeft = Math.max(1, Math.ceil((deadlineDate.getTime() - today.getTime()) / (24 * 60 * 60 * 1000)));
+        const weeksLeft = Math.ceil(daysLeft / 7);
+        const perDay = remaining / daysLeft;
+        const perWeek = remaining / weeksLeft;
+
+        const currencySymbol = goal.currency === 'INR' ? '₹' : '';
+        const amountFormat = (amt: number) => currencySymbol 
+          ? `₹${Math.round(amt).toLocaleString('en-IN')}`
+          : `${amt.toFixed(2)} ALGO`;
+
+        const amountMatch = message.toLowerCase().match(/(?:₹|rs\.?\s*)?\s*(\d{2,}(?:,\d{3})*(?:\.\d+)?)/);
+        const askedAmount = amountMatch ? Number(amountMatch[1].replace(/,/g, '')) : NaN;
+
+        if (isDepositQuestion && isDateQuestion) {
+          const deposits = (goal.transactions || [])
+            .filter((tx) => tx.type === 'deposit')
+            .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+          const matchedDeposit = !Number.isNaN(askedAmount)
+            ? deposits.find((tx) => Math.abs(tx.amount - askedAmount) < 0.01)
+            : deposits[0];
+
+          if (matchedDeposit) {
+            return {
+              response: `You deposited ${amountFormat(matchedDeposit.amount)} for **${goal.name}** on **${new Date(matchedDeposit.timestamp).toLocaleDateString()}**.\n\nCurrent progress:\n• Saved: ${amountFormat(goal.currentSaved)}\n• Target: ${amountFormat(goal.targetAmount)}\n• Progress: ${goalProgress}%`,
+              suggestions: [
+                'Show my latest deposits',
+                `How much weekly for ${goal.name}?`,
+                'Am I on track?',
+                'How to finish faster?'
+              ],
+            };
+          }
+
+          return {
+            response: `I could not find a deposit record${!Number.isNaN(askedAmount) ? ` of ${amountFormat(askedAmount)}` : ''} for **${goal.name}** in your goal transactions.\n\nCurrent progress:\n• Saved: ${amountFormat(goal.currentSaved)}\n• Target: ${amountFormat(goal.targetAmount)}\n• Progress: ${goalProgress}%`,
+            suggestions: [
+              'Show goal progress',
+              'Did I deposit for this goal?',
+              'How much should I save weekly?',
+              'View goal details'
+            ],
+          };
+        }
+
+        if (isDepositQuestion) {
+          const hasDeposited = goal.currentSaved > 0;
+          return {
+            response: `${hasDeposited ? 'Yes' : 'No'}${hasDeposited ? `, you have deposited for **${goal.name}**.` : `, no deposit is recorded yet for **${goal.name}**.`}\n\n• Saved: ${amountFormat(goal.currentSaved)}\n• Target: ${amountFormat(goal.targetAmount)}\n• Progress: ${goalProgress}%\n• Remaining: ${amountFormat(remaining)}\n\n${hasDeposited ? 'You are on track. Keep adding weekly to finish on time.' : 'Make your first deposit now to start building momentum.'}`,
+            suggestions: [
+              `How much should I save weekly for ${goal.name}?`,
+              'Show my goal progress',
+              'How to finish faster?',
+              'Motivate me'
+            ],
+          };
+        }
+
+        return {
+          response: `**${goal.name}** ${goal.type === 'on-chain' ? '🔒' : '💰'}\n\n**Current Status:**\n• Saved: ${amountFormat(goal.currentSaved)}\n• Target: ${amountFormat(goal.targetAmount)}\n• Progress: ${goalProgress}%\n• Days Left: ${daysLeft} (${weeksLeft} weeks)\n\n**What You Need:**\n• Daily: ${amountFormat(perDay)}\n• Weekly: ${amountFormat(perWeek)}\n\n${goal.goalCompleted ? '✅ **Goal completed! Celebrate your achievement!**' : remaining > 0 ? `**To finish on time:** Save ${amountFormat(perWeek)}/week starting now. Going strong! 💪` : '**Almost there!**'}\n\nGo to your goal's detail page for personalized AI advice on how to reach it faster!`,
+          suggestions: [
+            `How to save ${amountFormat(perWeek)}/week?`,
+            goal.type === 'off-chain' ? 'Withdraw from this goal?' : 'About this Smart Contract goal',
+            'What if I fall behind?',
+            'Motivate me to finish'
+          ],
+        };
+      }
+      // Fallback if goal not found
+      return {
+        response: `I couldn't find a goal matching "${message.split(/\s+/).find(w => w.length > 3) || 'that'}" in your active goals.\n\n**Your Current Goals:**\n${context?.goals && context.goals.length > 0 
+          ? context.goals.map(g => `• ${g.name} (${g.type === 'on-chain' ? 'Smart Contract' : 'Savings'}) — ${((g.currentSaved / g.targetAmount) * 100).toFixed(0)}% complete`).join('\n')
+          : 'No active goals yet. Create one to get started!'}\n\nWhich goal would you like help with?`,
+        suggestions: context?.goals?.map(g => g.name) || ['Create a savings goal', 'Create a Smart Contract goal', 'Help me set a goal'],
+      };
+
     case 'greeting':
       return {
         response: `Hello! Welcome to DhanSathi 👋\n\nI'm your personal financial assistant. I can help you with:\n\n💰 **Savings strategies** — tips to save more effectively\n🎯 **Goal planning** — create & track financial goals\n📊 **Budgeting** — manage income & expenses smartly\n🔒 **Smart Contracts** — lock funds for disciplined saving\n📈 **Investment ideas** — grow your money\n💪 **Motivation** — stay on track\n\nWhat would you like to explore?${contextLine}`,
@@ -93,8 +295,8 @@ function generateSmartResponse(message: string, context?: FinancialAdviceInput['
 
     case 'budgeting':
       return {
-        response: `Here's a **complete budgeting guide** 📊\n\n**Step 1: Know Your Income**\nList all monthly income sources — salary, freelancing, allowance, part-time work.\n\n**Step 2: Track Every Rupee for 1 Week**\nWrite down EVERY expense for 7 days. You'll be surprised where money goes! Common leaks: chai/coffee (₹100-200/day), food delivery (₹500-1000/week), impulse online shopping.\n\n**Step 3: Categorize Expenses**\n🔴 **Needs** (50%): Rent, groceries, transport, insurance, EMIs\n🟡 **Wants** (30%): Eating out, entertainment, shopping, subscriptions\n🟢 **Savings** (20%): DhanSathi goals, emergency fund, investments\n\n**Step 4: Find ₹ to Cut**\nTarget wants category first:\n• Reduce food delivery from 5x to 2x/week\n• Use free alternatives (YouTube instead of paid courses)\n• Negotiate bills annually (internet, insurance)\n\n**Step 5: Automate**\nSet up auto-deposits to DhanSathi on salary day. What's automatic gets done!\n\n**Pro Tip**: Review your budget every Sunday — it takes just 10 minutes and keeps you in control.`,
-        suggestions: ['How to track expenses?', 'Save more on food', 'Help me set a goal', 'What about emergency fund?'],
+        response: `**Budgeting Made Simple in DhanSathi** 📊\n\n**Step 1: Connect Your Bank (Optional)**\n• Go to **Dashboard** → **Connect Bank**\n• Transactions auto-import, auto-categorize\n• See real spending instantly\n\n**Step 2: Track Cash/SMS Spending**\n• Go to **SMS Parser**\n• Paste bank SMS messages → auto-extracts spending\n• Or use **Cash Spender** to manually log cash spending\n• All tracked in one place\n\n**Step 3: Review Your Analytics**\n• Go to **Analytics** page\n• See pie chart: Food, Shopping, Travel, Bills breakdown\n• View recent transactions\n• Check: "Where is my money actually going?"\n\n**Step 4: Find Leaks & Cut Costs**\nOnce you see categories:\n🍔 **Food spending ₹X?** → Cook at home 3x/week = save ₹2000-4000/month\n🚗 **Transport ₹Y?** → Use transit 2x/week = save ₹500-1000/month\n📱 **Subscriptions ₹Z?** → Cancel unused apps = save ₹500+/month\n\n**Step 5: Redirect Savings → Goal**\nMoney you cut from budget = deposit to your **Savings Goal** (GTA VI!)\n\n**Pro Tip**: Review analytics every Sunday. Takes 10 minutes, saves ₹1000s/month!`,
+        suggestions: ['Send my bank SMS', 'View my analytics', 'Track cash spending', 'Save more tips'],
       };
 
     case 'smart_contract_vs_savings':
@@ -141,8 +343,8 @@ function generateSmartResponse(message: string, context?: FinancialAdviceInput['
 
     case 'expense_tracking':
       return {
-        response: `**Track Your Expenses Like a Pro** 📝\n\n**The 7-Day Challenge:**\nFor the next 7 days, write down EVERY rupee you spend. Here's how:\n\n**Method 1: Notes App**\nJust type: "₹150 - lunch, ₹40 - auto, ₹299 - Netflix"\nSimple but effective!\n\n**Method 2: Categories**\nGroup your spending daily:\n🍔 Food & Drinks: ₹___\n🚗 Transport: ₹___\n🛍️ Shopping: ₹___\n📱 Subscriptions: ₹___\n🎮 Entertainment: ₹___\n📋 Bills: ₹___\n\n**What You'll Discover:**\n• "Latte Factor" — small daily purchases that add up (₹50 chai × 30 = ₹1,500/month!)\n• Subscription creep — services you forgot about\n• Emotional spending on things you don't need\n\n**After 7 Days:**\n1. Identify your top 3 "leak" categories\n2. Set a limit for each\n3. Redirect saved money to your DhanSathi goal\n4. Repeat monthly!\n\nMost people find ₹2,000-5,000/month of unnecessary spending. That's ₹24,000-60,000/year! 🤯`,
-        suggestions: ['Common money leaks', 'How to cut food spending?', 'Start a savings goal', 'Budgeting tips'],
+        response: `**Track Your Expenses in DhanSathi** 📱\n\nHere's exactly how to track spending:\n\n**1. For Bank Transactions:**\n• Go to **Dashboard** → **Connect Bank**\n• Link your bank account\n• All bank transactions auto-track in **Analytics** page\n• See spending by category with pie charts\n\n**2. For SMS Bank Alerts:**\n• Go to **SMS Parser**\n• Paste your bank SMS messages\n• DhanSathi automatically extracts: amount, merchant, date\n• Auto-categorizes each transaction\n• See all parsed expenses in **Analytics**\n\n**3. For Cash Spending:**\n• Go to **SMS Parser** → scroll to **Cash Spender**\n• Manually log: amount, date, merchant, category\n• Same as SMS tracking but for cash\n• Deduct from goal later if needed\n\n**4. View All Spending:**\n• Go to **Analytics** page\n• See pie chart: Food, Shopping, Travel, Bills, etc.\n• View recent transactions list\n• Check your spending by category\n\n**5. Spending Insights:**\n• Go to **Spending Insights** page\n• See trends over time\n• Identify categories where you overspend\n\nStart with SMS Parser today — takes 2 minutes to paste your bank alerts!`,
+        suggestions: ['Send me bank SMS', 'View Analytics', 'Check Spending Insights', 'Budget tips'],
       };
 
     case 'income_boost':
@@ -159,8 +361,8 @@ function generateSmartResponse(message: string, context?: FinancialAdviceInput['
 
     case 'app_help':
       return {
-        response: `**DhanSathi App Guide** 📱\n\n**Features You Can Use:**\n\n🏠 **Dashboard** — Overview of all your goals, total saved, and quick actions\n\n💰 **Savings Goals** (Flexible)\n• Set a goal with target amount in ₹\n• Deposit & withdraw anytime\n• AI predictions tell you if you're on track\n• Go to: Savings → New Savings Goal\n\n🔒 **Smart Contract Goals** (Locked)\n• Funds locked on Algorand blockchain\n• Can't withdraw until goal is complete\n• Maximum discipline!\n• Go to: Smart Contract → Create Goal\n\n📊 **Analytics** — See your saving patterns and trends\n\n👥 **Groups** — Save with friends, compete together\n\n🏆 **Leaderboard** — See how you rank among savers\n\n🤖 **AI Chatbot** (That's me!) — Ask anything about finances\n\n🎯 **Goal Advice Agent** — On each goal's detail page, get personalized AI advice to accomplish that specific goal\n\n🌐 **Multi-language** — Use the globe icon to switch language\n\n**Getting Started:**\n1. Connect your wallet\n2. Create your first Savings Goal\n3. Make your first deposit\n4. Ask me anything along the way!`,
-        suggestions: ['Create a Savings goal', 'How does Smart Contract work?', 'What is Algorand?', 'Show me analytics'],
+        response: `**DhanSathi App Guide** 📱\n\n**💰 Dashboard**\n• Overview of all your goals & total saved\n• **Connect Bank** to auto-import transactions\n• Quick action buttons\n\n**🎯 Savings Goals** (Flexible INR)\n• Create goals with target amount\n• Deposit & withdraw anytime\n• Track progress in real-time\n• AI advice on each goal\n\n🔒 **Smart Contract Goals** (Locked ALGO)\n• Funds locked on Algorand blockchain\n• Cannot withdraw until goal complete\n• Maximum discipline!\n\n**📊 Analytics**\n• See ALL your spending\n• Pie chart breakdown by category\n• Recent transactions list\n• Bank + SMS + Cash spending combined\n\n**📱 SMS Parser**\n• Paste bank SMS messages\n• Auto-extracts: amount, merchant, date\n• **Cash Spender** tool for manual cash logging\n• All tracked in Analytics\n\n💡 **Spending Insights**\n• See spending trends over time\n• Identify highest spending categories\n• Weekly/monthly summaries\n\n**📌 To Track Expenses:**\n1. Go **SMS Parser** → paste bank SMS\n2. Or use **Cash Spender** for manual logging\n3. View everything in **Analytics**\n\n**Ready to start?** Go to SMS Parser right now!`,
+        suggestions: ['Track expenses', 'View Analytics', 'Create a goal', 'Connect bank'],
       };
 
     case 'multiple_goals':
@@ -180,7 +382,7 @@ function generateSmartResponse(message: string, context?: FinancialAdviceInput['
         else assessment = "🎯 **Ready to begin!** Create your first goal and make that first deposit. The hardest step is always the first one — everything gets easier after that.";
 
         return {
-          response: `**Your Progress Report** 📊\n\n• 💰 Total Saved: **${saved.toFixed(2)} ALGO**\n• 🎯 Total Target: **${target.toFixed(2)} ALGO**\n• 📈 Progress: **${progress}%**\n• 🟢 Active Goals: **${active}**\n• ✅ Completed Goals: **${completed}**\n\n${assessment}\n\n**Next Steps:**\n${active > 0 ? '• Go to your goal details page for personalized AI advice\n• Use the Goal Advice Agent to create a weekly plan' : '• Create your first goal to get started!'}\n• Track your expenses this week to find more money to save`,
+          response: `**Your Progress Report** 📊\n\n**Smart Contract Goals (ALGO):**\n• 💰 Saved: ${saved.toFixed(2)} ALGO\n• 🎯 Target: ${target.toFixed(2)} ALGO\n• 📈 Progress: ${progress}%\n\n**Savings Goals (INR):**\n• 💰 Saved: ₹${savedInr.toLocaleString('en-IN')}\n• 🎯 Target: ₹${targetInr.toLocaleString('en-IN')}\n\n**Overall:**\n• 🟢 Active Goals: ${active}\n• ✅ Completed Goals: ${completed}\n\n${assessment}${contextLine.slice(0, -5)}`,
           suggestions: ['How to save faster?', 'Create a new goal', 'Motivation tips', 'Budgeting help'],
         };
       }
@@ -199,6 +401,30 @@ function generateSmartResponse(message: string, context?: FinancialAdviceInput['
 
 // ─── Main Export ───
 export async function getFinancialAdvice(input: FinancialAdviceInput) {
+  // Detect intent for suggestion generation and fallback categorization
+  const intent = detectIntent(input.userMessage, input.context);
+
+  // Build goals context string
+  const goalsContext = input.context?.goals?.length
+    ? input.context.goals.map(g => {
+        const currency = g.currency === 'INR' ? '₹' : '';
+        const savedStr = currency 
+          ? `₹${Math.round(g.currentSaved).toLocaleString('en-IN')}` 
+          : `${g.currentSaved.toFixed(2)} ALGO`;
+        const targetStr = currency 
+          ? `₹${g.targetAmount.toLocaleString('en-IN')}` 
+          : `${g.targetAmount.toFixed(2)} ALGO`;
+        const pct = ((g.currentSaved / g.targetAmount) * 100).toFixed(0);
+        const latestDeposit = (g.transactions || [])
+          .filter((tx) => tx.type === 'deposit')
+          .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
+        const latestDepositText = latestDeposit
+          ? ` | Latest deposit: ${currency ? `₹${Math.round(latestDeposit.amount).toLocaleString('en-IN')}` : `${latestDeposit.amount.toFixed(2)} ALGO`} on ${new Date(latestDeposit.timestamp).toLocaleDateString('en-IN')}`
+          : ' | Latest deposit: none';
+        return `- ${g.name}: ${savedStr} of ${targetStr} (${pct}%) — ${g.type === 'on-chain' ? 'Smart Contract (locked)' : 'Savings Goal (flexible)'}${latestDepositText}`;
+      }).join('\n')
+    : '- No goals yet';
+
   const systemPrompt = `You are DhanSathi AI, an expert financial advisor chatbot built into DhanSathi — a savings app that offers both flexible Savings Goals (INR, withdraw anytime) and Smart Contract Goals (ALGO, locked on Algorand blockchain until goal is met).
 
 Your personality: Friendly, knowledgeable, encouraging, practical. You use examples with ₹ (Indian Rupees) and ALGO.
@@ -216,24 +442,33 @@ Capabilities you help with:
 10. DhanSathi app features and how to use them
 
 Response rules:
-- Give detailed, actionable answers with specific numbers and examples
-- Use formatting: **bold** for key points, bullet points for lists
+- Keep answers concise: 80-140 words unless user asks for deep detail
+- Use at most 4 bullet points
 - Include practical ₹ amounts (₹50/day, ₹500/week examples)
 - Reference the user's actual data if available
 - Be culturally relevant for Indian users
-- Keep responses comprehensive but scannable (use headers, bullets)
-- End with a clear next step or call to action
-- NEVER give vague one-line answers
+- End with one clear next step
+- Avoid long essays and avoid repeating points
 - Use emojis sparingly for visual hierarchy
+- Never fabricate data, transactions, deposits, goals, or app features
+- If user asks whether they deposited for a specific goal, answer YES/NO in the first line
+- For goal deposit questions, use goal.currentSaved > 0 as deposited signal and include saved/target/progress
 
 ${input.context ? `
 User's Financial Data:
-- Total Saved: ${input.context.totalSaved?.toFixed(2) || 0} ALGO
-- Total Target: ${input.context.totalTarget?.toFixed(2) || 0} ALGO
-- Progress: ${input.context.totalTarget ? ((input.context.totalSaved || 0) / input.context.totalTarget * 100).toFixed(1) : 0}%
+- Total Saved (ALGO): ${input.context.totalSaved?.toFixed(2) || 0} ALGO
+- Total Target (ALGO): ${input.context.totalTarget?.toFixed(2) || 0} ALGO
+- Total Saved (INR): ₹${(input.context.totalSavedInr || 0).toLocaleString('en-IN')}
+- Total Target (INR): ₹${(input.context.totalTargetInr || 0).toLocaleString('en-IN')}
+- ALGO Progress: ${input.context.totalTarget ? ((input.context.totalSaved || 0) / input.context.totalTarget * 100).toFixed(1) : 0}%
 - Active Goals: ${input.context.activeGoals || 0}
 - Completed Goals: ${input.context.completedGoals || 0}
 ${input.context.recentDeposits?.length ? `- Recent Deposits: ${input.context.recentDeposits.map(d => `${d.amount} ALGO on ${d.date}`).join(', ')}` : '- No recent deposits'}
+${input.context.todaySpending?.length ? `- Today's Spending: ₹${(input.context.todayTotal || 0).toLocaleString('en-IN')} across ${input.context.todaySpending.length} transaction(s)` : '- Today\'s Spending: ₹0 (nothing tracked yet)'}
+
+User's Goals:
+${goalsContext}
+
 Use this data to personalize your response.` : ''}`;
 
   const conversationHistory = input.conversationHistory?.map(msg => ({
@@ -241,8 +476,8 @@ Use this data to personalize your response.` : ''}`;
     content: [{ text: msg.content }],
   })) || [];
 
-  // Try AI first
-  if (isAIConfigured) {
+  // Try AI first (unless we are in temporary cooldown due to rate limiting)
+  if (isAIConfigured && Date.now() >= aiCooldownUntil) {
     try {
       const { text } = await ai.generate({
         system: systemPrompt,
@@ -254,20 +489,25 @@ Use this data to personalize your response.` : ''}`;
 
       if (text && text.length > 30) {
         // Generate contextual follow-up suggestions
-        const intent = detectIntent(input.userMessage);
         const suggestions = getSuggestionsForIntent(intent);
 
         return {
           success: true,
           data: {
-            response: text,
+            response: compactResponse(text),
             suggestions,
             category: intent as string,
           },
         };
       }
     } catch (error) {
-      console.error('AI generation failed, using smart fallback:', error);
+      if (isQuotaOrRateLimitError(error)) {
+        const retryMs = extractRetryMsFromError(error);
+        aiCooldownUntil = Date.now() + retryMs;
+        console.warn(`Gemini quota/rate-limit reached. Using fallback for ${Math.ceil(retryMs / 1000)}s.`);
+      } else {
+        console.error('AI generation failed, using smart fallback:', error);
+      }
     }
   }
 
@@ -276,9 +516,9 @@ Use this data to personalize your response.` : ''}`;
   return {
     success: true,
     data: {
-      response: smartResponse.response,
+      response: compactResponse(smartResponse.response),
       suggestions: smartResponse.suggestions,
-      category: detectIntent(input.userMessage) as string,
+      category: intent as string,
     },
   };
 }
@@ -287,7 +527,7 @@ function getSuggestionsForIntent(intent: Intent): string[] {
   const map: Record<Intent, string[]> = {
     greeting: ['How can I save more?', 'Help me set a goal', 'Budgeting tips'],
     save_more: ['50/30/20 rule details', 'Track my expenses', 'Set a goal'],
-    budgeting: ['Save more on food', 'Track expenses', 'Set a goal'],
+    budgeting: ['Send my bank SMS', 'View my analytics', 'Track cash spending'],
     smart_contract_vs_savings: ['Create a goal', 'Tell me about ALGO', 'Which is safer?'],
     set_goal: ['Smart Contract vs Savings?', 'Calculate weekly savings', 'Goal ideas'],
     motivation: ['Show my progress', 'Daily challenge', 'Smart Contract lock'],
@@ -295,12 +535,14 @@ function getSuggestionsForIntent(intent: Intent): string[] {
     investment: ['What is SIP?', 'Emergency fund first?', 'ALGO explained'],
     emergency_fund: ['How much to save?', 'Create emergency goal', 'Then what?'],
     debt: ['Which method?', 'Save while in debt?', 'Credit card tips'],
-    expense_tracking: ['Common money leaks', 'Budget template', 'Save more'],
+    expense_tracking: ['Today\'s spending', 'Weekly summary', 'Save more tips'],
     income_boost: ['Freelancing tips', 'Passive income', 'Side hustles'],
     habit_building: ['52-week challenge', 'Smart Contract discipline', 'Daily tips'],
-    app_help: ['Create a goal', 'Smart Contract explained', 'Analytics'],
+    app_help: ['Track expenses', 'View Analytics', 'Create a goal'],
     multiple_goals: ['Priority order', 'Which goal type?', 'Emergency fund'],
     progress_check: ['Save faster', 'New goal', 'Motivation'],
+    goal_specific: ['How to save more?', 'Withdraw from goal?', 'Motivate me'],
+    daily_spending_check: ['Weekly spending', 'Reduce spending', 'View Analytics'],
     general: ['Save more', 'Budget tips', 'Set a goal', 'Smart Contract?'],
   };
   return map[intent] || map.general;

@@ -11,7 +11,7 @@ import RecentActivity from "@/components/dashboard/RecentActivity";
 import { getGoalsFirestore } from "@/lib/local-store";
 import { getAllNormalGoalsFirestore, getSavingsPrediction } from "@/lib/normal-goal-store";
 import { getGoalOnChainState } from "@/lib/blockchain";
-import type { Goal, GoalWithOnChainData, NormalGoal, Deposit } from "@/lib/types";
+import type { Goal, GoalWithOnChainData, NormalGoal } from "@/lib/types";
 import { fetchAlgoInrRate } from "@/lib/algo-inr";
 import { useAuth } from "@/contexts/AuthContext";
 import { getSavedSmsTransactions } from "@/lib/local-store";
@@ -22,6 +22,17 @@ type UserProfile = {
   phoneNumber?: string;
   dailySavingsSmsSentOn?: string;
   overspendSmsSentOn?: string;
+  cashReminderSmsSentOn?: string;
+};
+
+type DashboardActivity = {
+  id: string;
+  kind: "on-chain" | "off-chain";
+  action: "deposit" | "withdrawal";
+  amount: number;
+  timestamp: string;
+  goalName: string;
+  currency: "ALGO" | "INR";
 };
 
 function parseMerchantCategory(label: string): string {
@@ -96,21 +107,45 @@ export default function Dashboard() {
     return { totalSaved: totalSavedAlgo, totalTarget: totalTargetAlgo, completedGoals, activeGoals, progressPercent, normalTotalSaved, normalTotalTarget };
   }, [goals, normalGoals]);
 
-  const recentDeposits = useMemo(() => {
-    const allDeposits: (Deposit & { goalId: string; goalName: string; })[] = [];
+  const recentActivities = useMemo<DashboardActivity[]>(() => {
+    const activities: DashboardActivity[] = [];
+
     goals.forEach(goal => {
-        if (goal.deposits) {
-            goal.deposits.forEach(deposit => {
-                allDeposits.push({ ...deposit, goalId: goal.id, goalName: goal.name });
-            });
-        }
+      if (!goal.deposits) return;
+      goal.deposits.forEach((deposit, index) => {
+        activities.push({
+          id: `onchain-${goal.id}-${index}-${deposit.timestamp}`,
+          kind: "on-chain",
+          action: "deposit",
+          amount: deposit.amount,
+          timestamp: deposit.timestamp,
+          goalName: goal.name,
+          currency: "ALGO",
+        });
+      });
     });
-    return allDeposits.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).slice(0, 5);
-  }, [goals]);
+
+    normalGoals.forEach((goal) => {
+      goal.transactions.forEach((tx) => {
+        activities.push({
+          id: `offchain-${goal.id}-${tx.id}`,
+          kind: "off-chain",
+          action: tx.type,
+          amount: tx.amount,
+          timestamp: tx.timestamp,
+          goalName: goal.name,
+          currency: "INR",
+        });
+      });
+    });
+
+    return activities
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+      .slice(0, 5);
+  }, [goals, normalGoals]);
 
   useEffect(() => {
     if (!user?.uid) return;
-    if (normalGoals.length === 0) return;
 
     const runDailySmsChecks = async () => {
       const today = new Date().toISOString().slice(0, 10);
@@ -145,42 +180,53 @@ export default function Dashboard() {
         await setDoc(userRef, { dailySavingsSmsSentOn: today }, { merge: true });
       }
 
-      if (profile.overspendSmsSentOn === today) return;
+      if (profile.overspendSmsSentOn !== today) {
+        const last7Days = new Date();
+        last7Days.setDate(last7Days.getDate() - 7);
 
-      const last7Days = new Date();
-      last7Days.setDate(last7Days.getDate() - 7);
+        const recentDebitSms = getSavedSmsTransactions(user.uid).filter((tx) => {
+          if (tx.type !== "debit" || tx.amount <= 0) return false;
+          const d = new Date(tx.date);
+          return !Number.isNaN(d.getTime()) && d >= last7Days;
+        });
 
-      const recentDebitSms = getSavedSmsTransactions(user.uid).filter((tx) => {
-        if (tx.type !== "debit" || tx.amount <= 0) return false;
-        const d = new Date(tx.date);
-        return !Number.isNaN(d.getTime()) && d >= last7Days;
-      });
+        if (recentDebitSms.length > 0) {
+          const byCategory = new Map<string, number>();
+          recentDebitSms.forEach((tx) => {
+            const category = parseMerchantCategory(tx.merchant);
+            byCategory.set(category, (byCategory.get(category) || 0) + tx.amount);
+          });
 
-      if (recentDebitSms.length === 0) return;
+          const ranked = Array.from(byCategory.entries()).sort((a, b) => b[1] - a[1]);
+          const top = ranked[0];
 
-      const byCategory = new Map<string, number>();
-      recentDebitSms.forEach((tx) => {
-        const category = parseMerchantCategory(tx.merchant);
-        byCategory.set(category, (byCategory.get(category) || 0) + tx.amount);
-      });
+          if (top) {
+            const [topCategory, topAmount] = top;
+            const totalSpent = recentDebitSms.reduce((sum, t) => sum + t.amount, 0);
+            const isOverspending = topAmount >= 1000 && topAmount / Math.max(totalSpent, 1) >= 0.45;
 
-      const ranked = Array.from(byCategory.entries()).sort((a, b) => b[1] - a[1]);
-      const top = ranked[0];
-      if (!top) return;
+            if (isOverspending) {
+              const totalDaily = activeGoals.reduce((sum, g) => {
+                const prediction = getSavingsPrediction(g);
+                return sum + Math.max(0, Math.ceil(prediction.requiredPerWeek / 7));
+              }, 0);
 
-      const [topCategory, topAmount] = top;
-      const totalSpent = recentDebitSms.reduce((sum, t) => sum + t.amount, 0);
-      const isOverspending = topAmount >= 1000 && topAmount / Math.max(totalSpent, 1) >= 0.45;
-      if (!isOverspending) return;
+              const alertMsg = `DhanSathi alert: You spent ₹${topAmount.toLocaleString("en-IN")} on ${topCategory} in the last 7 days. Please reduce this category. From now, save ₹${totalDaily.toLocaleString("en-IN")}/day to achieve your goal.`;
+              await sendSms(phone, alertMsg);
+              await setDoc(userRef, { overspendSmsSentOn: today }, { merge: true });
+            }
+          }
+        }
+      }
 
-      const totalDaily = activeGoals.reduce((sum, g) => {
-        const prediction = getSavingsPrediction(g);
-        return sum + Math.max(0, Math.ceil(prediction.requiredPerWeek / 7));
-      }, 0);
-
-      const alertMsg = `DhanSathi alert: You spent ₹${topAmount.toLocaleString("en-IN")} on ${topCategory} in the last 7 days. Please reduce this category. From now, save ₹${totalDaily.toLocaleString("en-IN")}/day to achieve your goal.`;
-      await sendSms(phone, alertMsg);
-      await setDoc(userRef, { overspendSmsSentOn: today }, { merge: true });
+      // 11 PM nightly reminder for capturing cash spends.
+      const now = new Date();
+      const isAfter11Pm = now.getHours() >= 23;
+      if (isAfter11Pm && profile.cashReminderSmsSentOn !== today) {
+        const cashMsg = "DhanSathi 11PM check-in: Did you spend any money in cash today? Please add it in Cash Spender so your analytics and goal advice stay accurate.";
+        await sendSms(phone, cashMsg);
+        await setDoc(userRef, { cashReminderSmsSentOn: today }, { merge: true });
+      }
     };
 
     runDailySmsChecks();
@@ -203,7 +249,7 @@ export default function Dashboard() {
           isLoading={isLoading}
           loadGoals={loadGoals}
         />
-        <RecentActivity deposits={recentDeposits} />
+        <RecentActivity activities={recentActivities} />
       </main>
       <footer className="border-t border-border/60 py-5 mt-6">
         <p className="text-center text-xs text-muted-foreground">Running on Algorand Testnet &bull; Powered by DhanSathi</p>

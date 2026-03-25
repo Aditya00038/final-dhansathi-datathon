@@ -24,6 +24,46 @@ export type SavedSmsTransaction = {
   date: string;
   merchant: string;
   type: "debit" | "credit";
-  source: "sms-paste";
+  source: "sms-paste" | "cash-manual";
   createdAt: string;
+};
+
+// Off-chain (Savings) goal transaction
+export type NormalGoalTransaction = {
+  id: string;
+  type: "deposit" | "withdrawal";
+  amount: number;
+  timestamp: string;
+  note?: string;
+};
+
+// Off-chain (Savings) goal in INR, flexible withdrawal
+export type NormalGoal = {
+  id: string;
+  userId: string;
+  name: string;
+  targetAmount: number;
+  currentBalance: number;
+  deadline: string;
+  createdAt: string;
+  updatedAt?: string;
+  monthlyIncome?: number;
+  monthlySpending?: number;
+  transactions: NormalGoalTransaction[];
+  goalCompleted: boolean;
+};
+
+// On-chain goal (Smart Contract in ALGO)
+export type Goal = {
+  id: string;
+  userId: string;
+  name: string;
+  appId: number;
+  deadline?: string;
+  deposits: Deposit[];
+};
+
+export type Deposit = {
+  amount: number;
+  timestamp: string;
 };
